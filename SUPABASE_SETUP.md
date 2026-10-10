@@ -1,88 +1,57 @@
-# Supabase — step 1: connect
+# Supabase setup — listings and search
 
-Project: **home8 Project** · region **Central EU (Frankfurt)**
-URL: `https://bageehfzmwuyfaehaaon.supabase.co`
+Supabase project: `https://bageehfzmwuyfaehaaon.supabase.co`
 
-This step only proves the connection. The app still runs entirely on mock data
-and looks identical. Nothing reads from Supabase yet — that's deliberate.
+## How the two backends split
 
-## One-time local setup
-
-1. Copy the example config and paste your anon key into it:
-
-   ```
-   cp env.example.json env.json
-   ```
-
-   Get the key from **Settings → API Keys → anon / public**.
-   `env.json` is git-ignored, so it stays on your machine.
-
-2. Install the new dependency:
-
-   ```
-   flutter pub get
-   ```
-
-3. Run with the config:
-
-   ```
-   flutter run --dart-define-from-file=env.json
-   ```
-
-## What you should see
-
-In the console, on launch:
-
-```
-Supabase initialised: https://bageehfzmwuyfaehaaon.supabase.co
-```
-
-The app itself behaves exactly as before. That's success.
-
-If you run plain `flutter run` without the config, you'll instead see:
-
-```
-No SUPABASE_ANON_KEY defined — running on mock data.
-```
-
-That's also fine — the app is built to keep working without credentials, so a
-teammate cloning the repo gets a working build rather than a crash.
-
-## About the anon key
-
-It is **publishable, not secret**. It ships inside every app binary and anyone
-can extract it from an APK. What actually protects your data is Row Level
-Security on the tables — which is why RLS was enabled at project creation.
-
-Keeping the key out of the repo is still worth doing: it makes rotation
-possible and stops it leaking into forks and CI logs. But never treat it as the
-security boundary.
-
-The **`service_role` key is genuinely secret** and must never appear in this
-app. It bypasses RLS completely. It belongs only in server-side Edge Functions.
-
-## Also save
-
-The **database password** from project creation. Supabase won't show it again,
-and you'll need it for migrations and direct SQL access. Password manager, not
-a notes app.
-
-## Files changed in this step
-
-| File | Change |
+| Firebase (`home8-61d48`) | Supabase |
 |---|---|
-| `pubspec.yaml` | added `supabase_flutter: ^2.8.0` |
-| `lib/core/env.dart` | new — build-time config, `Env.hasSupabase` switch |
-| `lib/main.dart` | `Supabase.initialize()`, guarded and non-fatal |
-| `env.example.json` | new — committed template, no key |
-| `.gitignore` | ignores `env.json` |
+| Login: Google, email code (Firebase custom token) | Listings, search, filters, map area search |
+| User records (`users/{uid}`) | Saved listings (hearts) |
+| Chat, push notifications (next) | Similar homes, comparables, highlights |
+| | Communities, autocomplete, reels feed |
+| | `email-auth` Edge Function (sends/checks email codes) |
 
-## Next
+**There is one login — Firebase.** The app sends the Firebase ID token to
+Supabase; Supabase verifies it and Row Level Security uses the Firebase user id.
+Users never sign in to Supabase separately.
 
-1. **Auth** — phone OTP, rebuilding `AuthController` on real Supabase sessions
-   instead of the current "any six digits" mock.
-2. Tables + RLS policies, written together.
-3. `SupabaseListingRepository`, swapped in at the marked line in `main.dart`.
+What reads from Supabase now: Home, Search, autocomplete, Results (all filters
+and sorts), Property detail, Similar homes, Fair Price comparables, Reels feed,
+Saved hearts. **Still on mock data:** the seller side (My Listings, posting,
+stats) — it moves over together with photo upload in the next step.
 
-Auth comes before tables because every RLS policy keys off `auth.uid()`. Build
-tables first and you'll write those policies twice.
+---
+
+## Setup
+See **SETUP.md** (Part C). This file explains how the Supabase side works.
+
+## Checking it works
+- Console shows `Supabase initialised: https://bageehfzmwuyfaehaaon.supabase.co`.
+- Change a price in Supabase → **Table Editor → listings**, pull to refresh in
+  the app → the new price shows.
+- Sign in, tap a heart → a row appears in **saved_listings** with your Firebase
+  uid in `user_uid`.
+
+If hearts don't save: the token is missing `role: authenticated`. Check that
+third-party auth (SETUP.md C4) and the `email-auth` function (C3) are set up,
+then sign out and in again.
+
+## Security model (RLS)
+- `public.firebase_uid()` returns the Firebase user id only for tokens issued by
+  project `home8-61d48` (checks `iss` and `aud`); anything else is anonymous.
+- Everyone can read **live** listings, agents, places and reels of live listings.
+- Owners see and edit their own listings in any status, but **cannot set
+  `live` themselves** — publishing happens in review (dashboard / service role).
+- Saved listings: each user sees and changes only their own rows.
+
+## Tests
+`supabase/tests/tests.sql` — 49 checks (every filter, sort, paging, map bounds,
+autocomplete, and the security rules for anonymous users, two different users
+and a token from a different Firebase project). Run against a local Postgres
+after `supabase_stub.sql`, the migration and the seed.
+
+## Adding real listings for now
+Until posting is wired, add rows in **Table Editor → listings** with
+`status = live`, `purpose = rent|sale`, `market = AE`, and `area` matching a
+community name (for counts and autocomplete).

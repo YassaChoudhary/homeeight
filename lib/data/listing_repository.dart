@@ -21,6 +21,7 @@ import '../models/search_query.dart';
 ///   suggest()             -> GET  /search/suggest
 ///   reels()               -> GET  /reels
 ///   toggleSaved()         -> POST/DELETE /saved-listings
+///   savedListingIds()     -> GET  /saved-listings
 ///
 /// Seller side (screens 29–39):
 ///   listerStats()         -> GET    /me/stats
@@ -58,6 +59,10 @@ abstract class ListingRepository {
   /// Returns the new saved state. Optimistic UI calls this and rolls back on
   /// throw, so the signature stays the same once it hits a real endpoint.
   Future<bool> toggleSaved(String listingId, {required bool saved});
+
+  /// Ids the signed-in user has saved, for filling the hearts after sign-in
+  /// or on launch. Empty when signed out.
+  Future<Set<String>> savedListingIds();
 
   // -------------------------------------------------------------------------
   // Seller side

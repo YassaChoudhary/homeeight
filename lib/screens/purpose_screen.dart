@@ -12,6 +12,41 @@ import '../widgets/pill_button.dart';
 import 'lister/create_profile_screen.dart';
 import 'main_shell.dart';
 
+/// Where every sign-in method goes once the account is ready.
+///
+/// New accounts get the "What brings you to Home8?" question (this screen).
+/// Returning users already answered it — it's on their Firestore record — so
+/// they go straight into the app instead of being asked on every login.
+void continueAfterSignIn(BuildContext context, VoidCallback? onSignedIn) {
+  if (AppScope.authOf(context).lastSignInWasNew) {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => PurposeScreen(onSignedIn: onSignedIn),
+      ),
+    );
+    return;
+  }
+  landAfterSignIn(context, onSignedIn);
+}
+
+/// The end of the auth flow, from this screen or straight from a login.
+///
+/// Came from a save tap ([onSignedIn] set): unwind the auth stack and let the
+/// caller resume. Otherwise: reset to the shell on Discover.
+void landAfterSignIn(BuildContext context, VoidCallback? onSignedIn) {
+  if (onSignedIn != null) {
+    Navigator.of(context).popUntil((route) => route.isFirst);
+    onSignedIn();
+    return;
+  }
+  Navigator.of(context).pushAndRemoveUntil(
+    MaterialPageRoute(
+      builder: (_) => const MainShell(initialTab: NavTab.discover),
+    ),
+    (route) => false,
+  );
+}
+
 /// Screen 27 — "What brings you to Home8?", the last step of the auth flow.
 ///
 /// ## Both options now proceed
@@ -63,21 +98,7 @@ class _PurposeScreenState extends State<PurposeScreen> {
   ///
   /// Kept in one place so the save-tap callback and the two intents can't drift
   /// into three different ideas of "done".
-  void _land() {
-    final callback = widget.onSignedIn;
-    if (callback != null) {
-      // Came from a save tap: unwind the auth stack and let the caller resume.
-      Navigator.of(context).popUntil((route) => route.isFirst);
-      callback();
-      return;
-    }
-    Navigator.of(context).pushAndRemoveUntil(
-      MaterialPageRoute(
-        builder: (_) => const MainShell(initialTab: NavTab.discover),
-      ),
-      (route) => false,
-    );
-  }
+  void _land() => landAfterSignIn(context, widget.onSignedIn);
 
   /// "Just browsing? Skip for now" — keeps the session but leaves the intent at
   /// its default rather than recording a choice the user didn't make.

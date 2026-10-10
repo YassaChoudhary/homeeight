@@ -86,18 +86,14 @@ class _SplashScreenState extends State<SplashScreen> {
             child: Column(
               children: [
                 const Spacer(flex: 5),
-                Text.rich(
-                  TextSpan(
-                    style: AppTextStyles.display(color: Colors.white)
-                        .copyWith(fontSize: 44, fontWeight: FontWeight.w800),
-                    children: const [
-                      TextSpan(text: 'home'),
-                      TextSpan(
-                        text: '8',
-                        style: TextStyle(color: AppColors.accent),
-                      ),
-                    ],
-                  ),
+                // Brand mark (white, transparent background).
+                Image.asset(
+                  'assets/images/splash_logo.png',
+                  width: 140,
+                  height: 140,
+                  fit: BoxFit.contain,
+                  cacheWidth: 420,
+                  semanticLabel: 'Home8',
                 ),
                 const SizedBox(height: 12),
                 Text(

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Matches AppColors.primary, so the native launch screen blends into the
+         Flutter splash without a colour jump. -->
+    <color name="splash_background">#12A0A2</color>
+</resources>

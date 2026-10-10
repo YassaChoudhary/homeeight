@@ -314,6 +314,23 @@ class SavedListingsStore extends ValueNotifier<Set<String>> {
 
   bool contains(String id) => value.contains(id);
 
+  /// Merges the server's saved ids into the hearts. A union rather than a
+  /// replace, so a heart tapped during sign-in (the save gate applies it right
+  /// after) isn't wiped by a response that was already in flight.
+  Future<void> hydrate() async {
+    try {
+      final ids = await repository.savedListingIds();
+      if (ids.isNotEmpty) value = {...value, ...ids};
+    } catch (error) {
+      debugPrint('Saved listings unavailable: $error');
+    }
+  }
+
+  /// Signed out: the hearts belong to the account, not the device.
+  void clear() {
+    if (value.isNotEmpty) value = const {};
+  }
+
   /// Optimistic: flips locally, calls the repository, rolls back on failure.
   Future<void> toggle(String id) async {
     final wasSaved = value.contains(id);

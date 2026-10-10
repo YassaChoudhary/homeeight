@@ -1,3 +1,6 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
 
 import 'prefs_store.dart';
@@ -135,26 +138,27 @@ class GuestMigration {
     }
   }
 
-  /// TODO(backend): write these onto the signed-in user's profile row.
+  /// Writes the snapshot onto the signed-in user's Firestore record, under
+  /// `users/{uid}.guestState`.
   ///
-  /// Once the `profiles` table exists this becomes roughly:
-  ///
-  /// ```dart
-  /// final client = Supabase.instance.client;
-  /// final userId = client.auth.currentUser?.id;
-  /// if (userId == null) throw StateError('not signed in');
-  /// await client.from('profiles').upsert({
-  ///   'id': userId,
-  ///   ...payload.toJson(),
-  /// });
-  /// ```
+  /// Throws when nobody is signed in, so [flush] keeps the payload and retries
+  /// next launch. With Firebase not configured (iOS/web for now) there is
+  /// nowhere to send it, so it's treated as done rather than retried forever.
   ///
   /// Saved listings are **not** in this payload: saving already requires a
   /// signed-in account (see `SignInPrompt.gate`), so a guest can't accumulate
   /// any. If that rule ever changes, add them here and merge server-side rather
   /// than replacing.
   static Future<void> _upload(GuestMigration payload) async {
-    debugPrint(
-        'GuestMigration: no backend yet, payload held — ${payload.toJson()}');
+    if (Firebase.apps.isEmpty) {
+      debugPrint('GuestMigration: Firebase not configured, payload dropped');
+      return;
+    }
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) throw StateError('not signed in');
+    await FirebaseFirestore.instance.collection('users').doc(uid).set(
+      {'guestState': payload.toJson()},
+      SetOptions(merge: true),
+    ).timeout(const Duration(seconds: 10));
   }
 }

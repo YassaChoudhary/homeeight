@@ -174,6 +174,10 @@ class MockListingRepository implements ListingRepository {
     return saved;
   }
 
+  /// The mock keeps no server-side saves; the hearts live in memory only.
+  @override
+  Future<Set<String>> savedListingIds() async => const <String>{};
+
   // ---------------------------------------------------------------------
   // Seller side
   //

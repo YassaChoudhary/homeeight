@@ -345,9 +345,8 @@ connection, coming soon.
    change.
 5. **No i18n.** `Directionality` is wired and driven by `AppState`, so Arabic
    flips the whole tree, but strings are hardcoded English.
-6. **Bundle ID is still `com.example.homeeight`** — Play Store rejects
-   `com.example.*`. Must change before release; it's more than find-and-replace
-   (Kotlin package path on Android, Xcode on iOS).
+6. **Bundle ID changed to `com.home8.app`** (Android + iOS) to match the
+   Firebase app. Must never change once published. See FIREBASE_SETUP.md
 7. **`name: homeeight` in pubspec** is the Dart package name — every
    `import 'package:homeeight/...'` depends on it. Not worth renaming.
 8. **One widget test.** Boot-to-splash only. Controllers and the repository are

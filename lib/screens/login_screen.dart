@@ -21,8 +21,10 @@ import 'purpose_screen.dart';
 /// a session exists `MainShell` shows `ProfileScreen` in this slot instead —
 /// see `MainShell._buildTab`.
 ///
-/// Frontend only: [AuthController.requestPhoneCode] just records the number and
-/// waits. Google and Apple sign in directly because no SDK is wired.
+/// With Firebase on (Android): Email (next screen) and Google are real. Phone
+/// OTP needs Firebase's paid Blaze plan and Apple needs an Apple Developer
+/// account, so both explain that and point to Email/Google instead of faking a
+/// sign-in. With Firebase off, every option uses the local stand-in.
 class LoginScreen extends StatefulWidget {
   /// Present when the user was sent here by tapping a save heart. On success we
   /// return to the listing and apply the save, rather than dumping them on the
@@ -51,8 +53,19 @@ class _LoginScreenState extends State<LoginScreen> {
 
   bool get _canContinue => _phone.text.replaceAll(RegExp(r'\D'), '').length >= 7;
 
+  void _notAvailable(String message) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
   Future<void> _continueWithPhone() async {
     final auth = AppScope.authOf(context);
+    if (auth.usesFirebase) {
+      _notAvailable('Phone sign-in is coming soon. Please continue with '
+          'Email or Google for now.');
+      return;
+    }
     await auth.requestPhoneCode(dial: _dial.dial, phone: _phone.text);
     if (!mounted) return;
     Navigator.of(context).push(
@@ -64,14 +77,28 @@ class _LoginScreenState extends State<LoginScreen> {
 
   Future<void> _continueWithProvider(AuthMethod method) async {
     final auth = AppScope.authOf(context);
-    await auth.signInWithProvider(method);
+    if (auth.busy) return;
+
+    if (auth.usesFirebase && method == AuthMethod.apple) {
+      _notAvailable('Sign in with Apple is coming with the iOS app. Please '
+          'continue with Email or Google for now.');
+      return;
+    }
+
+    try {
+      if (method == AuthMethod.google) {
+        final signedIn = await auth.signInWithGoogle();
+        if (!signedIn) return; // closed the Google picker
+      } else {
+        await auth.signInWithProvider(method);
+      }
+    } on AuthException catch (e) {
+      if (mounted) _notAvailable(e.message);
+      return;
+    }
     if (!mounted) return;
-    // Providers skip the code step but still need the intent question.
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => PurposeScreen(onSignedIn: widget.onSignedIn),
-      ),
-    );
+    // New accounts get the intent question; returning users go straight in.
+    continueAfterSignIn(context, widget.onSignedIn);
   }
 
   Future<void> _pickCountry() async {

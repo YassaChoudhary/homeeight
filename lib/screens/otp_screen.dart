@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../state/app_scope.dart';
+import '../state/auth_controller.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_spacing.dart';
 import '../theme/app_text_styles.dart';
@@ -21,9 +22,10 @@ import 'purpose_screen.dart';
 /// all six at once and gets caret and paste behaviour for free. The boxes are
 /// just a painted view of `_controller.text`.
 ///
-/// Frontend only — [AuthController.verifyCode] accepts any six digits. The
-/// wrong-code branch is still built and wired, so it will work unchanged once
-/// there's something to verify against.
+/// With Firebase on, the code is checked by the Supabase Edge Function
+/// `email-auth`; a wrong, expired or locked-out code shows the server's message
+/// ("That code isn't right. 3 attempts left.") and clears the boxes. In local
+/// mode any six digits pass.
 class OtpScreen extends StatefulWidget {
   final VoidCallback? onSignedIn;
 
@@ -35,7 +37,9 @@ class OtpScreen extends StatefulWidget {
 
 class _OtpScreenState extends State<OtpScreen> {
   static const int _length = 6;
-  static const int _resendSeconds = 28;
+  /// Matches the server's 30-second gap between emails (supabase/migrations/20261011010000_email_otp.sql), so
+  /// "Resend code" never appears before the server would accept it.
+  static const int _resendSeconds = 30;
 
   final TextEditingController _controller = TextEditingController();
   final FocusNode _focus = FocusNode();
@@ -79,19 +83,46 @@ class _OtpScreenState extends State<OtpScreen> {
   }
 
   Future<void> _verify() async {
-    setState(() => _error = null);
     final auth = AppScope.authOf(context);
-    final ok = await auth.verifyCode(_code);
+    if (auth.busy) return;
+    setState(() => _error = null);
+
+    String? failure;
+    try {
+      final ok = await auth.verifyCode(_code);
+      if (!ok) failure = "That code doesn't look right. Try again.";
+    } on AuthException catch (e) {
+      failure = e.message;
+    }
     if (!mounted) return;
-    if (!ok) {
-      setState(() => _error = "That code doesn't look right. Try again.");
+
+    if (failure != null) {
+      // Clear the boxes so the next attempt starts clean.
+      _controller.clear();
+      setState(() => _error = failure);
+      _focus.requestFocus();
       return;
     }
-    Navigator.of(context).pushReplacement(
-      MaterialPageRoute(
-        builder: (_) => PurposeScreen(onSignedIn: widget.onSignedIn),
-      ),
-    );
+    // New accounts get "What brings you to Home8?"; returning users go in.
+    continueAfterSignIn(context, widget.onSignedIn);
+  }
+
+  Future<void> _resend() async {
+    final auth = AppScope.authOf(context);
+    if (auth.busy) return;
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _error = null);
+    try {
+      await auth.resendCode();
+      if (!mounted) return;
+      _controller.clear();
+      _startTimer();
+      messenger.showSnackBar(
+        SnackBar(content: Text('New code sent to ${auth.maskedTarget}.')),
+      );
+    } on AuthException catch (e) {
+      if (mounted) setState(() => _error = e.message);
+    }
   }
 
   void _onChanged(String value) {
@@ -172,7 +203,7 @@ class _OtpScreenState extends State<OtpScreen> {
                                 )
                               : GestureDetector(
                                   behavior: HitTestBehavior.opaque,
-                                  onTap: _startTimer,
+                                  onTap: _resend,
                                   child: Text(
                                     'Resend code',
                                     style: AppTextStyles.bodyStrong(
@@ -184,7 +215,9 @@ class _OtpScreenState extends State<OtpScreen> {
                           behavior: HitTestBehavior.opaque,
                           onTap: () => Navigator.of(context).maybePop(),
                           child: Text(
-                            'Change number',
+                            auth.pendingEmail != null
+                                ? 'Change email'
+                                : 'Change number',
                             style: AppTextStyles.bodyStrong().copyWith(
                               decoration: TextDecoration.underline,
                             ),

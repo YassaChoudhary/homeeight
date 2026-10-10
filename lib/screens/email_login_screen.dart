@@ -9,10 +9,15 @@ import '../theme/app_text_styles.dart';
 import '../widgets/app_icons.dart';
 import '../widgets/brand_mark.dart';
 import '../widgets/pill_button.dart';
+import '../widgets/form_fields.dart';
 import 'otp_screen.dart';
 import 'purpose_screen.dart';
 
 /// Screen 24 — "Continue with Email".
+///
+/// Passwordless: the user enters their email, we send a 6-digit code (Supabase
+/// Edge Function `email-auth`), and screen 25 checks it. The same flow signs up
+/// a new address and logs in an existing one — there is no separate sign-up.
 ///
 /// Pushed from screen 23, so it gets a circular back button rather than the
 /// tab layout. The alternate providers shown here are Phone and Google, not the
@@ -30,6 +35,10 @@ class EmailLoginScreen extends StatefulWidget {
 class _EmailLoginScreenState extends State<EmailLoginScreen> {
   final TextEditingController _email = TextEditingController();
 
+  /// Shown under the field (rate limit, email service down…). Cleared as soon
+  /// as the address is edited.
+  String? _error;
+
   @override
   void dispose() {
     _email.dispose();
@@ -44,7 +53,16 @@ class _EmailLoginScreenState extends State<EmailLoginScreen> {
 
   Future<void> _continue() async {
     final auth = AppScope.authOf(context);
-    await auth.requestEmailCode(_email.text.trim());
+    if (!_valid || auth.busy) return;
+    FocusScope.of(context).unfocus();
+    setState(() => _error = null);
+
+    try {
+      await auth.requestEmailCode(_email.text.trim());
+    } on AuthException catch (e) {
+      if (mounted) setState(() => _error = e.message);
+      return;
+    }
     if (!mounted) return;
     Navigator.of(context).push(
       MaterialPageRoute(
@@ -55,13 +73,14 @@ class _EmailLoginScreenState extends State<EmailLoginScreen> {
 
   Future<void> _google() async {
     final auth = AppScope.authOf(context);
-    await auth.signInWithProvider(AuthMethod.google);
-    if (!mounted) return;
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => PurposeScreen(onSignedIn: widget.onSignedIn),
-      ),
-    );
+    if (auth.busy) return;
+    try {
+      final signedIn = await auth.signInWithGoogle();
+      if (!signedIn || !mounted) return;
+      continueAfterSignIn(context, widget.onSignedIn);
+    } on AuthException catch (e) {
+      if (mounted) setState(() => _error = e.message);
+    }
   }
 
   @override
@@ -89,15 +108,18 @@ class _EmailLoginScreenState extends State<EmailLoginScreen> {
                 decoration: BoxDecoration(
                   color: AppColors.surface,
                   borderRadius: BorderRadius.circular(AppRadius.md),
-                  border: Border.all(color: AppColors.line),
+                  border: Border.all(
+                    color: _error != null ? AppColors.danger : AppColors.line,
+                  ),
                 ),
                 child: TextField(
                   controller: _email,
                   keyboardType: TextInputType.emailAddress,
                   autocorrect: false,
+                  autofillHints: const [AutofillHints.email],
                   textInputAction: TextInputAction.done,
-                  onChanged: (_) => setState(() {}),
-                  onSubmitted: (_) => _valid ? _continue() : null,
+                  onChanged: (_) => setState(() => _error = null),
+                  onSubmitted: (_) => _continue(),
                   style: AppTextStyles.bodyStrong().copyWith(fontSize: 16.5),
                   decoration: InputDecoration(
                     isDense: true,
@@ -108,6 +130,14 @@ class _EmailLoginScreenState extends State<EmailLoginScreen> {
                   ),
                 ),
               ),
+              if (_error != null) ...[
+                const SizedBox(height: 12),
+                InfoNote(
+                  message: _error!,
+                  tone: NoteTone.warning,
+                  icon: Icons.error_outline_rounded,
+                ),
+              ],
               const SizedBox(height: 16),
               PrimaryButton(
                 label: 'Continue',

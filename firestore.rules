@@ -1,0 +1,21 @@
+rules_version = '2';
+
+// Home8 Firestore rules.
+// Paste into Firebase console → Firestore Database → Rules → Publish.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // users/{uid} — one record per account, written by the app on sign-up.
+    // Only the signed-in owner can read or change their own record.
+    match /users/{userId} {
+      allow read, create, update: if request.auth != null
+                                  && request.auth.uid == userId;
+      allow delete: if false;
+    }
+
+    // Everything else is closed until we add rules for it (listings, etc.).
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
