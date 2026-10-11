@@ -5,6 +5,12 @@
 //   { "action": "send",        "email": "a@b.com" }                 → { sent: true }
 //   { "action": "verify",      "email": "a@b.com", "code": "123456" } → { token, isNewUser }
 //   { "action": "ensure-role", "idToken": "<Firebase ID token>" }    → { updated }
+//   { "action": "google",      "idToken": "<Google ID token>" }      → { token, isNewUser }
+//
+// One account per email: "verify" and "google" both find the Firebase user BY
+// EMAIL (or create it), so a person who signed up with a code and later taps
+// "Continue with Google" — or the other way round — always lands in the same
+// account, whatever Firebase's own account-linking setting is.
 //
 // "verify" returns a Firebase custom token; the app signs in with
 // FirebaseAuth.signInWithCustomToken(token). Google login stays 100% Firebase —
@@ -15,6 +21,9 @@
 //                             Service accounts → Generate new private key
 //   BREVO_API_KEY             Brevo → SMTP & API → API keys
 //   MAIL_FROM                 sender address verified in Brevo
+//   GOOGLE_CLIENT_IDS         optional; comma-separated OAuth client ids whose
+//                             Google ID tokens are accepted. Defaults to the
+//                             Home8 web client from google-services.json.
 // SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are provided automatically.
 //
 // Deploy with "Verify JWT" OFF (the app calls it before anyone is signed in).
@@ -39,6 +48,9 @@ export interface FirebaseUser {
   email?: string;
   emailVerified?: boolean;
   disabled?: boolean;
+  displayName?: string;
+  photoUrl?: string;
+  createdAt?: string; // ms since epoch, as a string
   customAttributes?: string; // JSON string, as the Identity Toolkit returns it
 }
 
@@ -48,12 +60,26 @@ export interface Deps {
   firebase: {
     lookupByEmail: (email: string) => Promise<FirebaseUser | null>;
     lookupById: (uid: string) => Promise<FirebaseUser | null>;
-    createUser: (email: string) => Promise<FirebaseUser>;
-    updateUser: (uid: string, patch: { emailVerified?: boolean; customAttributes?: string }) => Promise<void>;
+    createUser: (email: string, profile?: { displayName?: string; photoUrl?: string }) => Promise<FirebaseUser>;
+    updateUser: (uid: string, patch: UserPatch) => Promise<void>;
     createCustomToken: (uid: string, claims: Record<string, unknown>) => Promise<string>;
     verifyIdToken: (idToken: string) => Promise<{ uid: string; claims: Record<string, unknown> }>;
+    verifyGoogleIdToken: (idToken: string) => Promise<GoogleProfile>;
   };
   newCode?: () => string;
+}
+
+export interface UserPatch {
+  emailVerified?: boolean;
+  customAttributes?: string;
+  displayName?: string;
+  photoUrl?: string;
+}
+
+export interface GoogleProfile {
+  email: string;
+  name?: string;
+  picture?: string;
 }
 
 export class AuthError extends Error {
@@ -164,24 +190,60 @@ export async function verifyCode(deps: Deps, rawEmail: unknown, rawCode: unknown
       throw new AuthError(400, 'no-code', 'No active code for this email. Request a new one.');
   }
 
-  // Same email → same account, whether it first signed up with a code or Google.
+  return signInByEmail(deps, email);
+}
+
+/**
+ * The one place an account is chosen: by verified email. Finds the Firebase
+ * user with this email (or creates it), and returns a custom token for it.
+ * Both the email code and Google end here — that's what keeps one account
+ * per email.
+ */
+async function signInByEmail(
+  deps: Deps,
+  email: string,
+  profile: { displayName?: string; photoUrl?: string } = {},
+) {
   let user = await deps.firebase.lookupByEmail(email);
   let isNewUser = false;
   if (!user) {
-    user = await deps.firebase.createUser(email);
+    user = await deps.firebase.createUser(email, profile);
     isNewUser = true;
   }
   if (user.disabled) {
     throw new AuthError(403, 'disabled', 'This account has been disabled.');
   }
-  if (!user.emailVerified) {
-    // A code proves the person owns the inbox.
-    await deps.firebase.updateUser(user.localId, { emailVerified: true });
+
+  // Both a code and Google prove the person owns the inbox. Fill in a name
+  // and photo from Google only where the account has none — never overwrite
+  // what the user set themselves.
+  const patch: UserPatch = {};
+  if (!user.emailVerified) patch.emailVerified = true;
+  if (!user.displayName && profile.displayName) patch.displayName = profile.displayName;
+  if (!user.photoUrl && profile.photoUrl) patch.photoUrl = profile.photoUrl;
+  if (!isNewUser && Object.keys(patch).length > 0) {
+    await deps.firebase.updateUser(user.localId, patch);
   }
   await ensureRole(deps, user);
 
   const token = await deps.firebase.createCustomToken(user.localId, { ...SUPABASE_CLAIMS });
   return { token, isNewUser };
+}
+
+/** "Continue with Google": the app sends Google's ID token for the account picked. */
+export async function signInWithGoogle(deps: Deps, idToken: unknown) {
+  if (typeof idToken !== 'string' || idToken.length < 20) {
+    throw new AuthError(400, 'invalid-token', 'Google sign-in failed. Please try again.');
+  }
+  let google: GoogleProfile;
+  try {
+    google = await deps.firebase.verifyGoogleIdToken(idToken);
+  } catch (err) {
+    console.error('Google ID token rejected:', err);
+    throw new AuthError(401, 'invalid-token', 'Google sign-in failed. Please try again.');
+  }
+  const email = normalizeEmail(google.email);
+  return signInByEmail(deps, email, { displayName: google.name, photoUrl: google.picture });
 }
 
 export async function ensureRoleForToken(deps: Deps, idToken: unknown) {
@@ -231,6 +293,8 @@ export function createHandler(getDeps: () => Deps) {
           return json(200, await verifyCode(deps, body.email, body.code));
         case 'ensure-role':
           return json(200, await ensureRoleForToken(deps, body.idToken));
+        case 'google':
+          return json(200, await signInWithGoogle(deps, body.idToken));
         default:
           return json(400, { error: { code: 'bad-action', message: 'Unknown action.' } });
       }
@@ -278,12 +342,64 @@ const CUSTOM_TOKEN_AUD =
   'https://identitytoolkit.googleapis.com/google.identity.identitytoolkit.v1.IdentityToolkit';
 const SECURETOKEN_JWKS =
   'https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com';
+const GOOGLE_JWKS = 'https://www.googleapis.com/oauth2/v3/certs';
+const GOOGLE_ISSUERS = ['accounts.google.com', 'https://accounts.google.com'];
 
-export function firebaseAdmin(sa: ServiceAccount, fetchFn: typeof fetch = fetch, now = () => Date.now()) {
+/** Web OAuth client from android/app/google-services.json (client_type 3). */
+export const DEFAULT_GOOGLE_CLIENT_IDS = [
+  '515552573780-1iddeggktedl30hiuc87vr8rkdkrlj13.apps.googleusercontent.com',
+];
+
+/**
+ * RS256 JWT signature check against a Google JWKS URL, with key caching.
+ * Returns the decoded payload; claim checks are up to the caller.
+ */
+export function jwksVerifier(url: string, fetchFn: typeof fetch = fetch, now = () => Date.now()) {
+  let cache: { keys: Record<string, CryptoKey>; exp: number } | null = null;
+  async function keys(): Promise<Record<string, CryptoKey>> {
+    if (cache && cache.exp > now()) return cache.keys;
+    const res = await fetchFn(url);
+    if (!res.ok) throw new Error(`JWKS ${res.status}`);
+    const data = await res.json();
+    const out: Record<string, CryptoKey> = {};
+    for (const k of data.keys ?? []) {
+      out[k.kid] = await crypto.subtle.importKey(
+        'jwk', { kty: k.kty, n: k.n, e: k.e, alg: 'RS256', ext: true },
+        { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify']);
+    }
+    const maxAge = Number(/max-age=(\d+)/.exec(res.headers.get('cache-control') ?? '')?.[1] ?? 3600);
+    cache = { keys: out, exp: now() + maxAge * 1000 };
+    return out;
+  }
+  return async (token: string): Promise<Record<string, any>> => {
+    const [h, p, s] = token.split('.');
+    if (!h || !p || !s) throw new Error('malformed');
+    const header = JSON.parse(new TextDecoder().decode(b64urlDecode(h)));
+    const payload = JSON.parse(new TextDecoder().decode(b64urlDecode(p)));
+    if (header.alg !== 'RS256') throw new Error('alg');
+    const k = (await keys())[header.kid];
+    if (!k) throw new Error('kid');
+    const ok = await crypto.subtle.verify('RSASSA-PKCS1-v1_5', k, b64urlDecode(s),
+      new TextEncoder().encode(`${h}.${p}`));
+    if (!ok) throw new Error('signature');
+    const t = Math.floor(now() / 1000);
+    if (typeof payload.exp !== 'number' || payload.exp <= t) throw new Error('time');
+    if (typeof payload.iat === 'number' && payload.iat > t + 300) throw new Error('time');
+    return payload;
+  };
+}
+
+export function firebaseAdmin(
+  sa: ServiceAccount,
+  fetchFn: typeof fetch = fetch,
+  now = () => Date.now(),
+  googleClientIds: string[] = DEFAULT_GOOGLE_CLIENT_IDS,
+) {
+  const verifyFirebaseJwt = jwksVerifier(SECURETOKEN_JWKS, fetchFn, now);
+  const verifyGoogleJwt = jwksVerifier(GOOGLE_JWKS, fetchFn, now);
   let keyPromise: Promise<CryptoKey> | null = null;
   const key = () => (keyPromise ??= importPrivateKey(sa.private_key));
   let access: { token: string; exp: number } | null = null;
-  let jwks: { keys: Record<string, CryptoKey>; exp: number } | null = null;
   const base = `https://identitytoolkit.googleapis.com/v1/projects/${sa.project_id}`;
 
   async function accessToken(): Promise<string> {
@@ -322,30 +438,24 @@ export function firebaseAdmin(sa: ServiceAccount, fetchFn: typeof fetch = fetch,
     return data?.users?.[0] ?? null;
   }
 
-  async function signingKeys(): Promise<Record<string, CryptoKey>> {
-    if (jwks && jwks.exp > now()) return jwks.keys;
-    const res = await fetchFn(SECURETOKEN_JWKS);
-    if (!res.ok) throw new Error(`JWKS ${res.status}`);
-    const data = await res.json();
-    const keys: Record<string, CryptoKey> = {};
-    for (const k of data.keys ?? []) {
-      keys[k.kid] = await crypto.subtle.importKey(
-        'jwk', { kty: k.kty, n: k.n, e: k.e, alg: 'RS256', ext: true },
-        { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' }, false, ['verify']);
-    }
-    const maxAge = Number(/max-age=(\d+)/.exec(res.headers.get('cache-control') ?? '')?.[1] ?? 3600);
-    jwks = { keys, exp: now() + maxAge * 1000 };
-    return keys;
-  }
-
   return {
-    lookupByEmail: (email: string) => lookup({ email: [email] }),
-    lookupById: (uid: string) => lookup({ localId: [uid] }),
-    async createUser(email: string): Promise<FirebaseUser> {
-      const data = await call('/accounts', { email, emailVerified: true });
-      return { localId: data.localId, email, emailVerified: true };
+    // If old duplicates share an email, the oldest account wins — the one the
+    // person signed up with first.
+    async lookupByEmail(email: string): Promise<FirebaseUser | null> {
+      const data = await call('/accounts:lookup', { email: [email] });
+      const users: FirebaseUser[] = data?.users ?? [];
+      users.sort((a, b) => Number(a.createdAt ?? 0) - Number(b.createdAt ?? 0));
+      return users[0] ?? null;
     },
-    async updateUser(uid: string, patch: { emailVerified?: boolean; customAttributes?: string }) {
+    lookupById: (uid: string) => lookup({ localId: [uid] }),
+    async createUser(email: string, profile: { displayName?: string; photoUrl?: string } = {}): Promise<FirebaseUser> {
+      const body: Record<string, unknown> = { email, emailVerified: true };
+      if (profile.displayName) body.displayName = profile.displayName;
+      if (profile.photoUrl) body.photoUrl = profile.photoUrl;
+      const data = await call('/accounts', body);
+      return { localId: data.localId, email, emailVerified: true, ...profile };
+    },
+    async updateUser(uid: string, patch: UserPatch) {
       await call('/accounts:update', { localId: uid, ...patch });
     },
     async createCustomToken(uid: string, claims: Record<string, unknown>) {
@@ -356,22 +466,21 @@ export function firebaseAdmin(sa: ServiceAccount, fetchFn: typeof fetch = fetch,
       }, await key());
     },
     async verifyIdToken(idToken: string) {
-      const [h, p, s] = idToken.split('.');
-      if (!h || !p || !s) throw new Error('malformed');
-      const header = JSON.parse(new TextDecoder().decode(b64urlDecode(h)));
-      const payload = JSON.parse(new TextDecoder().decode(b64urlDecode(p)));
-      if (header.alg !== 'RS256') throw new Error('alg');
-      const k = (await signingKeys())[header.kid];
-      if (!k) throw new Error('kid');
-      const ok = await crypto.subtle.verify('RSASSA-PKCS1-v1_5', k, b64urlDecode(s),
-        new TextEncoder().encode(`${h}.${p}`));
-      const t = Math.floor(now() / 1000);
-      if (!ok) throw new Error('signature');
+      const payload = await verifyFirebaseJwt(idToken);
       if (payload.iss !== `https://securetoken.google.com/${sa.project_id}`) throw new Error('iss');
       if (payload.aud !== sa.project_id) throw new Error('aud');
       if (typeof payload.sub !== 'string' || !payload.sub) throw new Error('sub');
-      if (payload.exp <= t || payload.iat > t + 300) throw new Error('time');
       return { uid: payload.sub, claims: payload };
+    },
+    async verifyGoogleIdToken(idToken: string): Promise<GoogleProfile> {
+      const payload = await verifyGoogleJwt(idToken);
+      if (!GOOGLE_ISSUERS.includes(payload.iss)) throw new Error('iss');
+      if (!googleClientIds.includes(payload.aud)) throw new Error(`aud ${payload.aud}`);
+      if (typeof payload.email !== 'string' || !payload.email) throw new Error('no email');
+      if (payload.email_verified !== true && payload.email_verified !== 'true') {
+        throw new Error('email not verified by Google');
+      }
+      return { email: payload.email, name: payload.name, picture: payload.picture };
     },
   };
 }
@@ -425,6 +534,41 @@ function brevoSender(apiKey: string, from: string, fetchFn: typeof fetch = fetch
   };
 }
 
+/**
+ * Reads the Firebase service account from secrets. Accepts, in order:
+ *   1. FIREBASE_SERVICE_ACCOUNT as the JSON file's contents (ideally pasted
+ *      as ONE line — the dashboard splits multi-line pastes into pieces),
+ *   2. the same JSON base64-encoded,
+ *   3. three separate secrets: FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL,
+ *      FIREBASE_PRIVATE_KEY (values copied from the JSON file).
+ */
+export function serviceAccountFromEnv(get: (name: string) => string | undefined): ServiceAccount {
+  const raw = (get('FIREBASE_SERVICE_ACCOUNT') ?? '').trim();
+  const valid = (sa: any): sa is ServiceAccount =>
+    !!sa && typeof sa.project_id === 'string' && typeof sa.client_email === 'string' &&
+    typeof sa.private_key === 'string' && sa.private_key.includes('PRIVATE KEY');
+  if (raw) {
+    try {
+      const sa = JSON.parse(raw);
+      if (valid(sa)) return sa;
+    } catch { /* try base64 next */ }
+    try {
+      const sa = JSON.parse(atob(raw.replace(/\s+/g, '')));
+      if (valid(sa)) return sa;
+    } catch { /* try separate secrets next */ }
+  }
+  const sa = {
+    project_id: (get('FIREBASE_PROJECT_ID') ?? '').trim(),
+    client_email: (get('FIREBASE_CLIENT_EMAIL') ?? '').trim(),
+    private_key: (get('FIREBASE_PRIVATE_KEY') ?? '').trim().replace(/^"|"$/g, ''),
+  };
+  if (valid(sa)) return sa;
+  throw new Error(
+    'Firebase service account secret is missing or unreadable. Paste the JSON file as ONE line ' +
+    'into FIREBASE_SERVICE_ACCOUNT, or set FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL and ' +
+    'FIREBASE_PRIVATE_KEY separately. (Starts with: ' + JSON.stringify(raw.slice(0, 12)) + ')');
+}
+
 let realDeps: Deps | null = null;
 
 function depsFromEnv(): Deps {
@@ -434,11 +578,13 @@ function depsFromEnv(): Deps {
     if (!v) throw new Error(`Missing secret ${name}`);
     return v;
   };
-  const sa = JSON.parse(env('FIREBASE_SERVICE_ACCOUNT')) as ServiceAccount;
+  const sa = serviceAccountFromEnv((name) => DenoGlobal.env.get(name));
   realDeps = {
     rpc: supabaseRpc(env('SUPABASE_URL'), env('SUPABASE_SERVICE_ROLE_KEY')),
     sendMail: brevoSender(env('BREVO_API_KEY'), env('MAIL_FROM')),
-    firebase: firebaseAdmin(sa),
+    firebase: firebaseAdmin(sa, fetch, () => Date.now(),
+      (DenoGlobal.env.get('GOOGLE_CLIENT_IDS') ?? '').split(',').map((x: string) => x.trim()).filter(Boolean)
+        .concat(DEFAULT_GOOGLE_CLIENT_IDS)),
   };
   return realDeps;
 }

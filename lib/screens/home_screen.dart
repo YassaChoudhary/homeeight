@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
@@ -54,17 +57,35 @@ class _HomeScreenState extends State<HomeScreen>
   Purpose _purpose = Purpose.rent;
   PropertySegment _segment = PropertySegment.residential;
 
+  /// What the category grid is currently *showing*. These trail [_purpose]
+  /// and [_segment] by the length of the switch animation, so the boxes fade
+  /// out as the old version, the loader plays, and they come back as the new.
+  Purpose _gridPurpose = Purpose.rent;
+  PropertySegment _gridSegment = PropertySegment.residential;
+
+  /// True while the switch loader is on screen (either toggle).
+  bool _switching = false;
+  Timer? _switchTimer;
+
+  /// How long the loader stays up. Long enough to read as "the page changed",
+  /// short enough not to feel like waiting.
+  static const Duration _switchDuration = Duration(milliseconds: 750);
+
   @override
   bool get wantKeepAlive => true;
 
   @override
   void initState() {
     super.initState();
+    // Both read _purpose when they run, so a reload after the toggle fetches
+    // the rent or sale version.
     _highlights = AsyncController<List<Property>>(
-      () => AppScope.repositoryOf(context).highlights(),
+      () => AppScope.repositoryOf(context)
+          .highlights(purpose: _purpose, segment: _segment),
     );
     _communities = AsyncController<List<Community>>(
-      () => AppScope.repositoryOf(context).popularCommunities(),
+      () => AppScope.repositoryOf(context)
+          .popularCommunities(purpose: _purpose, segment: _segment),
     );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _highlights.load();
@@ -72,8 +93,41 @@ class _HomeScreenState extends State<HomeScreen>
     });
   }
 
+  void _setPurpose(Purpose next) {
+    if (next != _purpose) _switchTo(purpose: next);
+  }
+
+  void _setSegment(PropertySegment next) {
+    if (next != _segment) _switchTo(segment: next);
+  }
+
+  /// Either toggle: start the loader, refetch both carousels for the new
+  /// combination, and bring the boxes back once the loader has played.
+  ///
+  /// Tapping again mid-switch restarts the timer, so the boxes always end up
+  /// showing whatever is selected last.
+  void _switchTo({Purpose? purpose, PropertySegment? segment}) {
+    setState(() {
+      _purpose = purpose ?? _purpose;
+      _segment = segment ?? _segment;
+      _switching = true;
+    });
+    _highlights.load();
+    _communities.load();
+    _switchTimer?.cancel();
+    _switchTimer = Timer(_switchDuration, () {
+      if (!mounted) return;
+      setState(() {
+        _switching = false;
+        _gridPurpose = _purpose;
+        _gridSegment = _segment;
+      });
+    });
+  }
+
   @override
   void dispose() {
+    _switchTimer?.cancel();
     _highlights.dispose();
     _communities.dispose();
     super.dispose();
@@ -120,9 +174,16 @@ class _HomeScreenState extends State<HomeScreen>
   @override
   Widget build(BuildContext context) {
     super.build(context);
-    final categories = _segment == PropertySegment.residential
+    // The grid shows the version it's animating to only once the loader is
+    // done, so it uses the trailing _grid* values.
+    final categories = _gridSegment == PropertySegment.residential
         ? PropertyCategory.residential
         : PropertyCategory.commercial;
+    final what = _segment == PropertySegment.commercial
+        ? 'commercial spaces'
+        : 'homes';
+    final emptyLabel =
+        'No $what ${_purpose == Purpose.sale ? 'for sale' : 'for rent'} yet';
 
     return ColoredBox(
       color: AppColors.bg,
@@ -152,19 +213,30 @@ class _HomeScreenState extends State<HomeScreen>
                     Center(
                       child: _PurposeToggle(
                         purpose: _purpose,
-                        onChanged: (p) => setState(() => _purpose = p),
+                        onChanged: _setPurpose,
                       ),
                     ),
                     const SizedBox(height: 20),
                     _SegmentToggle(
                       segment: _segment,
-                      onChanged: (s) => setState(() => _segment = s),
+                      onChanged: _setSegment,
                     ),
                     const SizedBox(height: 18),
-                    _CategoryGrid(
-                      categories: categories,
-                      onTap: (c) => _openResults(
-                        query: _baseQuery.copyWith(propertyType: c.wire),
+                    _PurposeSwitchArea(
+                      switching: _switching,
+                      purpose: _purpose,
+                      segment: _segment,
+                      tileCount: categories.length,
+                      grid: _CategoryGrid(
+                        // A new key replays the staggered entrance whenever
+                        // the boxes come back for a different purpose or
+                        // segment.
+                        key: ValueKey(
+                            'grid-${_gridPurpose.name}-${_gridSegment.name}'),
+                        categories: categories,
+                        onTap: (c) => _openResults(
+                          query: _baseQuery.copyWith(propertyType: c.wire),
+                        ),
                       ),
                     ),
                     const SizedBox(height: 28),
@@ -182,7 +254,10 @@ class _HomeScreenState extends State<HomeScreen>
                 height: DealCard.height,
                 child: ListenableBuilder(
                   listenable: _highlights,
-                  builder: (context, _) => _highlights.state.when(
+                  builder: (context, _) => _FadeSwap(
+                    swapKey: '${_purpose.name}-${_segment.name}-'
+                        '${_highlights.state.runtimeType}',
+                    child: _highlights.state.when(
                     loading: () => ListView.separated(
                       scrollDirection: Axis.horizontal,
                       padding: const EdgeInsets.symmetric(
@@ -200,7 +275,9 @@ class _HomeScreenState extends State<HomeScreen>
                         onRetry: _highlights.load,
                       ),
                     ),
-                    data: (items) => ListView.separated(
+                    data: (items) => items.isEmpty
+                        ? _EmptyNote(message: emptyLabel)
+                        : ListView.separated(
                       scrollDirection: Axis.horizontal,
                       physics: const BouncingScrollPhysics(),
                       padding: const EdgeInsets.symmetric(
@@ -213,6 +290,7 @@ class _HomeScreenState extends State<HomeScreen>
                         onTap: () => _openDetail(items[i]),
                       ),
                     ),
+                  ),
                   ),
                 ),
               ),
@@ -232,14 +310,19 @@ class _HomeScreenState extends State<HomeScreen>
                     const SizedBox(height: 14),
                     ListenableBuilder(
                       listenable: _communities,
-                      builder: (context, _) => _communities.state.when(
+                      builder: (context, _) => _FadeSwap(
+                        swapKey: '${_purpose.name}-${_segment.name}-'
+                            '${_communities.state.runtimeType}',
+                        child: _communities.state.when(
                         loading: () => const _CommunityGridSkeleton(),
                         error: (_) => ErrorStateView(
                           compact: true,
                           message: "Couldn't load communities.",
                           onRetry: _communities.load,
                         ),
-                        data: (items) => GridView.builder(
+                        data: (items) => items.isEmpty
+                            ? _EmptyNote(message: emptyLabel, inset: false)
+                            : GridView.builder(
                           shrinkWrap: true,
                           padding: EdgeInsets.zero,
                           physics: const NeverScrollableScrollPhysics(),
@@ -259,6 +342,7 @@ class _HomeScreenState extends State<HomeScreen>
                             ),
                           ),
                         ),
+                      ),
                       ),
                     ),
                     SizedBox(height: HomeNavBar.reservedSpace(context) + 16),
@@ -654,7 +738,20 @@ class _CategoryGrid extends StatelessWidget {
   final List<PropertyCategory> categories;
   final ValueChanged<PropertyCategory> onTap;
 
-  const _CategoryGrid({required this.categories, required this.onTap});
+  const _CategoryGrid({super.key, required this.categories, required this.onTap});
+
+  static const double spacing = 12;
+  static const double aspectRatio = 0.80;
+  static const int columns = 3;
+
+  /// Height the grid will take at [width] — the loader uses it so swapping
+  /// between the two never moves anything below.
+  static double heightFor(double width, int count) {
+    final tileWidth = (width - spacing * (columns - 1)) / columns;
+    final tileHeight = tileWidth / aspectRatio;
+    final rows = (count + columns - 1) ~/ columns;
+    return rows * tileHeight + math.max(0, rows - 1) * spacing;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -664,14 +761,17 @@ class _CategoryGrid extends StatelessWidget {
       physics: const NeverScrollableScrollPhysics(),
       itemCount: categories.length,
       gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 3,
-        mainAxisSpacing: 12,
-        crossAxisSpacing: 12,
-        childAspectRatio: 0.80,
+        crossAxisCount: columns,
+        mainAxisSpacing: spacing,
+        crossAxisSpacing: spacing,
+        childAspectRatio: aspectRatio,
       ),
-      itemBuilder: (context, i) => _CategoryTile(
-        category: categories[i],
-        onTap: () => onTap(categories[i]),
+      itemBuilder: (context, i) => _StaggeredEntrance(
+        index: i,
+        child: _CategoryTile(
+          category: categories[i],
+          onTap: () => onTap(categories[i]),
+        ),
       ),
     );
   }
@@ -735,6 +835,289 @@ class _CategoryTile extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// For Rent ⇄ For Sale switch animation
+// ---------------------------------------------------------------------------
+
+/// Holds the category grid and, while [switching], cross-fades it to a loader
+/// of exactly the same height — so nothing below the grid jumps.
+///
+/// Sequence on a tap: boxes fade out (220 ms) → loader fades in with bouncing
+/// dots and "Showing homes for sale" → after the switch timer, loader fades out
+/// and the boxes come back one after another (see [_StaggeredEntrance]).
+class _PurposeSwitchArea extends StatelessWidget {
+  final bool switching;
+  final Purpose purpose;
+  final PropertySegment segment;
+  final int tileCount;
+  final Widget grid;
+
+  const _PurposeSwitchArea({
+    required this.switching,
+    required this.purpose,
+    required this.segment,
+    required this.tileCount,
+    required this.grid,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final height = _CategoryGrid.heightFor(constraints.maxWidth, tileCount);
+        return SizedBox(
+          height: height,
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 260),
+            reverseDuration: const Duration(milliseconds: 220),
+            switchInCurve: Curves.easeOutCubic,
+            switchOutCurve: Curves.easeInCubic,
+            layoutBuilder: (current, previous) => Stack(
+              alignment: Alignment.topCenter,
+              children: [...previous, if (current != null) current],
+            ),
+            transitionBuilder: (child, animation) => FadeTransition(
+              opacity: animation,
+              child: ScaleTransition(
+                scale: Tween<double>(begin: 0.98, end: 1).animate(animation),
+                child: child,
+              ),
+            ),
+            child: switching
+                ? _PurposeLoader(
+                    key: ValueKey('loader-${purpose.name}-${segment.name}'),
+                    purpose: purpose,
+                    segment: segment,
+                    height: height,
+                  )
+                : grid,
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// Faint placeholder boxes in the grid's shape, with three bouncing dots and
+/// a line saying which version is loading.
+class _PurposeLoader extends StatefulWidget {
+  final Purpose purpose;
+  final PropertySegment segment;
+  final double height;
+
+  const _PurposeLoader({
+    super.key,
+    required this.purpose,
+    required this.segment,
+    required this.height,
+  });
+
+  @override
+  State<_PurposeLoader> createState() => _PurposeLoaderState();
+}
+
+class _PurposeLoaderState extends State<_PurposeLoader>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _dots = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 900),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _dots.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final what = widget.segment == PropertySegment.commercial
+        ? 'commercial'
+        : 'homes';
+    final label =
+        'Showing $what ${widget.purpose == Purpose.sale ? 'for sale' : 'for rent'}';
+
+    return SizedBox(
+      height: widget.height,
+      child: Stack(
+        children: [
+          // Ghost tiles in the same 3-column layout as the real grid.
+          Positioned.fill(
+            child: GridView.builder(
+              padding: EdgeInsets.zero,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: 9,
+              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: _CategoryGrid.columns,
+                mainAxisSpacing: _CategoryGrid.spacing,
+                crossAxisSpacing: _CategoryGrid.spacing,
+                childAspectRatio: _CategoryGrid.aspectRatio,
+              ),
+              itemBuilder: (_, _) =>
+                  const SkeletonBox(height: double.infinity, radius: AppRadius.md),
+            ),
+          ),
+          Center(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
+              decoration: BoxDecoration(
+                color: AppColors.surface,
+                borderRadius: BorderRadius.circular(999),
+                boxShadow: [
+                  BoxShadow(
+                    color: AppColors.ink.withValues(alpha: 0.10),
+                    blurRadius: 18,
+                    offset: const Offset(0, 5),
+                  ),
+                ],
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  RepaintBoundary(
+                    child: AnimatedBuilder(
+                      animation: _dots,
+                      builder: (context, _) => Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          for (var i = 0; i < 3; i++) _dot(i),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Text(
+                    label,
+                    style: AppTextStyles.bodyStrong(color: AppColors.ink)
+                        .copyWith(fontSize: 14),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// One dot: rises and brightens in turn, a third of a cycle after the last.
+  Widget _dot(int i) {
+    final phase = (_dots.value - i / 3) % 1.0;
+    final lift = math.sin(phase * math.pi * 2).clamp(0.0, 1.0);
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 2.5),
+      child: Transform.translate(
+        offset: Offset(0, -5 * lift),
+        child: Container(
+          width: 8,
+          height: 8,
+          decoration: BoxDecoration(
+            color: AppColors.primary.withValues(alpha: 0.45 + 0.55 * lift),
+            shape: BoxShape.circle,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Fades and lifts a tile into place, each one a beat after the previous, so
+/// the grid "deals in" left-to-right, top-to-bottom. Plays once per mount —
+/// the grid's key changes on every switch, which remounts the tiles.
+///
+/// Skipped when the device has "Remove animations" turned on.
+class _StaggeredEntrance extends StatelessWidget {
+  final int index;
+  final Widget child;
+
+  const _StaggeredEntrance({required this.index, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    if (MediaQuery.disableAnimationsOf(context)) return child;
+    final delay = 45 * index;
+    const run = 320;
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: 0, end: 1),
+      duration: Duration(milliseconds: delay + run),
+      curve: Interval(delay / (delay + run), 1, curve: Curves.easeOutCubic),
+      child: child,
+      builder: (context, t, child) => Opacity(
+        opacity: t,
+        child: Transform.translate(
+          offset: Offset(0, 14 * (1 - t)),
+          child: Transform.scale(scale: 0.94 + 0.06 * t, child: child),
+        ),
+      ),
+    );
+  }
+}
+
+/// Small inline "nothing here yet" for the carousels — the full
+/// [EmptyStateView] is too tall for a 1-row carousel slot.
+class _EmptyNote extends StatelessWidget {
+  final String message;
+
+  /// The carousel row is full-bleed, so it needs the screen padding; the
+  /// communities block is already inside it.
+  final bool inset;
+
+  const _EmptyNote({required this.message, this.inset = true});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.symmetric(
+          horizontal: inset ? AppSpacing.screenPadding : 0),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 22),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(AppRadius.md),
+          border: Border.all(color: AppColors.line),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.home_work_outlined,
+                color: AppColors.inkMuted, size: 22),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                message,
+                style: AppTextStyles.body(color: AppColors.inkMuted),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Cross-fade for the carousels: skeleton → cards (or error) fade instead of
+/// popping, and a rent → sale reload fades through its skeleton.
+class _FadeSwap extends StatelessWidget {
+  final String swapKey;
+  final Widget child;
+
+  const _FadeSwap({required this.swapKey, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 280),
+      switchInCurve: Curves.easeOutCubic,
+      switchOutCurve: Curves.easeInCubic,
+      layoutBuilder: (current, previous) => Stack(
+        alignment: Alignment.topLeft,
+        children: [...previous, if (current != null) current],
+      ),
+      child: KeyedSubtree(key: ValueKey(swapKey), child: child),
     );
   }
 }

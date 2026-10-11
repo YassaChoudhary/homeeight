@@ -138,10 +138,10 @@ class AuthException implements Exception {
 /// Two modes:
 ///
 /// * **Firebase** (`useFirebase: true`, set by `main.dart` when
-///   `Firebase.initializeApp()` succeeds — today that's Android). Google is
-///   plain Firebase Auth. Email codes go through the free Supabase Edge
-///   Function `email-auth`, which returns a Firebase custom token — so every
-///   user is a Firebase user either way. The session survives restarts
+///   `Firebase.initializeApp()` succeeds — today that's Android). Both email
+///   codes and Google go through the free Supabase Edge Function `email-auth`,
+///   which picks the Firebase account BY EMAIL and returns a custom token — so
+///   one email is always one account, whichever method is used. The session survives restarts
 ///   because Firebase persists it; [_onAuthStateChanged] restores it on launch. The user record
 ///   lives in Firestore at `users/{uid}`.
 /// * **Local** (Firebase unavailable — iOS/web until they're configured, and
@@ -346,9 +346,24 @@ class AuthController extends ChangeNotifier {
           throw const AuthException(
               "Google didn't return a sign-in token. Please try again.");
         }
-        final credential = await _firebaseAuth.signInWithCredential(
-          GoogleAuthProvider.credential(idToken: idToken),
-        );
+        // One account per email: the `email-auth` function checks the Google
+        // token, finds the Firebase account that already has this email (from
+        // an email-code sign-up, say) or creates it, and returns a sign-in
+        // token for THAT account. Signing in to Firebase with the Google
+        // credential directly could create a second account instead.
+        final UserCredential credential;
+        if (_useSupabase) {
+          final data = await _emailAuth({'action': 'google', 'idToken': idToken});
+          final token = data['token'] as String?;
+          if (token == null) {
+            throw const AuthException('Google sign-in failed. Please try again.');
+          }
+          credential = await _firebaseAuth.signInWithCustomToken(token);
+        } else {
+          credential = await _firebaseAuth.signInWithCredential(
+            GoogleAuthProvider.credential(idToken: idToken),
+          );
+        }
         await _completeSignIn(credential, AuthMethod.google);
         completed = true;
       } on GoogleSignInException catch (e) {

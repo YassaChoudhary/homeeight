@@ -10,7 +10,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   createHandler, sendCode, verifyCode, ensureRoleForToken, firebaseAdmin,
-  normalizeEmail, randomCode, signJwt, sha256Hex,
+  normalizeEmail, randomCode, signJwt, sha256Hex, serviceAccountFromEnv, signInWithGoogle,
 } from './index.ts';
 
 // ---------------------------------------------------------------------------
@@ -58,9 +58,14 @@ function fakeFirebase() {
     users,
     async lookupByEmail(email) { for (const u of users.values()) if (u.email === email) return { ...u }; return null; },
     async lookupById(uid) { return users.has(uid) ? { ...users.get(uid) } : null; },
-    async createUser(email) { const u = { localId: `u${++n}`, email, emailVerified: true }; users.set(u.localId, u); return { ...u }; },
+    async createUser(email, profile = {}) { const u = { localId: `u${++n}`, email, emailVerified: true, ...profile }; users.set(u.localId, u); return { ...u }; },
     async updateUser(uid, patch) { Object.assign(users.get(uid), patch); },
     async createCustomToken(uid, claims) { api.lastClaims = claims; return `token-for-${uid}`; },
+    async verifyGoogleIdToken(t) {
+      if (!t.startsWith('google:')) throw new Error('bad google token');
+      const [, email, name] = t.split(':');
+      return { email, name, picture: name ? `https://pic/${name}` : undefined };
+    },
     async verifyIdToken(t) {
       if (!t.startsWith('valid:')) throw new Error('bad');
       const uid = t.split(':')[1];
@@ -300,4 +305,109 @@ test('Identity Toolkit calls: OAuth token cached, correct URLs and bodies', asyn
   assert.deepEqual(JSON.parse(calls[1].init.body), { email: ['a@b.com'] });
   assert.deepEqual(JSON.parse(calls[2].init.body), { email: 'n@b.com', emailVerified: true });
   assert.deepEqual(JSON.parse(calls[3].init.body), { localId: 'u1', customAttributes: '{"role":"authenticated"}' });
+});
+
+test('service account secret: one-line JSON, base64, separate secrets; clear error when mangled', () => {
+  const sa = { type: 'service_account', project_id: 'home8-61d48', client_email: 'sa@x.iam.gserviceaccount.com',
+    private_key: '-----BEGIN PRIVATE KEY-----\nABC\n-----END PRIVATE KEY-----\n' };
+  const env = (o) => (n) => o[n];
+  assert.equal(serviceAccountFromEnv(env({ FIREBASE_SERVICE_ACCOUNT: JSON.stringify(sa) })).project_id, 'home8-61d48');
+  assert.equal(serviceAccountFromEnv(env({ FIREBASE_SERVICE_ACCOUNT: JSON.stringify(sa, null, 2) })).client_email, sa.client_email);
+  assert.equal(serviceAccountFromEnv(env({ FIREBASE_SERVICE_ACCOUNT: Buffer.from(JSON.stringify(sa)).toString('base64') })).project_id, 'home8-61d48');
+  const sep = serviceAccountFromEnv(env({ FIREBASE_PROJECT_ID: 'home8-61d48', FIREBASE_CLIENT_EMAIL: sa.client_email,
+    FIREBASE_PRIVATE_KEY: '"' + sa.private_key + '"' }));
+  assert.ok(sep.private_key.startsWith('-----BEGIN'));
+  // what the dashboard produced from a multi-line paste:
+  assert.throws(() => serviceAccountFromEnv(env({ FIREBASE_SERVICE_ACCOUNT: '\t\ntype\t"service_account"' })), /ONE line/);
+});
+
+// ---------------------------------------------------------------------------
+// One account per email, across email code and Google
+// ---------------------------------------------------------------------------
+
+const gtoken = (email, name = '') => `google:${email}:${name}:${'_'.repeat(30)}`;
+
+test('email code first, then Google → SAME account; Google fills missing name/photo', async () => {
+  const { deps, sent } = setup();
+  await sendCode(deps, 'yassa@gmail.com');
+  const first = await verifyCode(deps, 'yassa@gmail.com', sent[0].code);
+  assert.equal(first.isNewUser, true);
+  const second = await signInWithGoogle(deps, gtoken('Yassa@Gmail.com', 'Yassa'));
+  assert.equal(second.token, first.token, 'same uid → same token');
+  assert.equal(second.isNewUser, false);
+  assert.equal(fb(deps).users.size, 1, 'no second account');
+  const u = fb(deps).users.get('u1');
+  assert.equal(u.displayName, 'Yassa');
+  assert.equal(u.photoUrl, 'https://pic/Yassa');
+});
+
+test('Google first, then email code → SAME account', async () => {
+  const { deps, sent } = setup();
+  const g = await signInWithGoogle(deps, gtoken('a@b.com', 'Ali'));
+  assert.equal(g.isNewUser, true);
+  assert.equal(fb(deps).users.get('u1').displayName, 'Ali');
+  await sendCode(deps, 'a@b.com');
+  const e = await verifyCode(deps, 'a@b.com', sent[0].code);
+  assert.equal(e.token, g.token);
+  assert.equal(e.isNewUser, false);
+  assert.equal(fb(deps).users.size, 1);
+});
+
+test('Google never overwrites a name/photo the user set; claims include Supabase role', async () => {
+  const { deps } = setup();
+  fb(deps).users.set('k1', { localId: 'k1', email: 'k@b.com', emailVerified: true, displayName: 'My Name', photoUrl: 'mine.jpg' });
+  await signInWithGoogle(deps, gtoken('k@b.com', 'Google Name'));
+  const u = fb(deps).users.get('k1');
+  assert.equal(u.displayName, 'My Name');
+  assert.equal(u.photoUrl, 'mine.jpg');
+  assert.deepEqual(fb(deps).lastClaims, { role: 'authenticated' });
+});
+
+test('bad Google tokens are refused with 401; HTTP action "google" works', async () => {
+  const { deps } = setup();
+  await assert.rejects(signInWithGoogle(deps, 'not-google-token-xxxxxxxxxxxxxxxxxxxx'), (e) => e.status === 401);
+  await assert.rejects(signInWithGoogle(deps, 'short'), (e) => e.status === 400);
+  const handle = createHandler(() => deps);
+  const res = await handle(new Request('http://x', { method: 'POST', body: JSON.stringify({ action: 'google', idToken: gtoken('h@b.com') }) }));
+  assert.equal(res.status, 200);
+  assert.equal((await res.json()).isNewUser, true);
+});
+
+test('Google ID token verification (real crypto): aud, iss, email_verified, expiry, signature', async () => {
+  const google = await rsaKeys();
+  const { pem } = await rsaKeys();
+  const sa = { project_id: 'home8-61d48', client_email: 'sa@x', private_key: pem };
+  const now = 1_700_000_000_000;
+  const fetchFn = async (url) => {
+    assert.equal(String(url), 'https://www.googleapis.com/oauth2/v3/certs');
+    return new Response(JSON.stringify({ keys: [{ ...google.jwk, kid: 'g1' }] }));
+  };
+  const admin = firebaseAdmin(sa, fetchFn, () => now);
+  const t = Math.floor(now / 1000);
+  const aud = '515552573780-1iddeggktedl30hiuc87vr8rkdkrlj13.apps.googleusercontent.com';
+  const base = { iss: 'https://accounts.google.com', aud, sub: '1234', email: 'p@gmail.com', email_verified: true,
+    name: 'P', picture: 'https://lh3/p', iat: t - 5, exp: t + 3000 };
+  const sign = (p) => signJwt(p, google.pair.privateKey, 'g1');
+  assert.deepEqual(await admin.verifyGoogleIdToken(await sign(base)), { email: 'p@gmail.com', name: 'P', picture: 'https://lh3/p' });
+  assert.equal((await admin.verifyGoogleIdToken(await sign({ ...base, iss: 'accounts.google.com' }))).email, 'p@gmail.com');
+  await assert.rejects(admin.verifyGoogleIdToken(await sign({ ...base, aud: 'someone-elses-app.apps.googleusercontent.com' })), /aud/);
+  await assert.rejects(admin.verifyGoogleIdToken(await sign({ ...base, iss: 'https://evil.com' })), /iss/);
+  await assert.rejects(admin.verifyGoogleIdToken(await sign({ ...base, email_verified: false })), /not verified/);
+  await assert.rejects(admin.verifyGoogleIdToken(await sign({ ...base, exp: t - 1 })), /time/);
+  const other = await rsaKeys();
+  await assert.rejects(admin.verifyGoogleIdToken(await signJwt(base, other.pair.privateKey, 'g1')), /signature/);
+});
+
+test('lookupByEmail: if duplicates exist, the OLDEST account is used', async () => {
+  const { pem } = await rsaKeys();
+  const sa = { project_id: 'home8-61d48', client_email: 'sa@x', private_key: pem };
+  const fetchFn = async (url) => {
+    if (String(url).includes('oauth2.googleapis.com/token')) return new Response(JSON.stringify({ access_token: 'AT', expires_in: 3600 }));
+    return new Response(JSON.stringify({ users: [
+      { localId: 'googleDup', email: 'a@b.com', createdAt: '1791665900000' },
+      { localId: 'emailFirst', email: 'a@b.com', createdAt: '1791665800000' },
+    ] }));
+  };
+  const admin = firebaseAdmin(sa, fetchFn, () => 1_700_000_000_000);
+  assert.equal((await admin.lookupByEmail('a@b.com')).localId, 'emailFirst');
 });

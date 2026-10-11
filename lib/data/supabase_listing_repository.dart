@@ -91,16 +91,32 @@ class SupabaseListingRepository implements ListingRepository {
   }
 
   @override
-  Future<List<Property>> highlights({int limit = 8}) async {
-    final list = await _rpcList(
-        'highlight_listings', {'p_limit': limit, 'p_market': market});
+  Future<List<Property>> highlights({
+    int limit = 8,
+    Purpose? purpose,
+    PropertySegment? segment,
+  }) async {
+    final list = await _rpcList('highlight_listings', {
+      'p_limit': limit,
+      'p_market': market,
+      'p_purpose': purpose?.wire,
+      'p_segment': segment?.name,
+    });
     return list.map(Property.fromJson).toList(growable: false);
   }
 
   @override
-  Future<List<Community>> popularCommunities({int limit = 4}) async {
-    final list = await _rpcList(
-        'popular_communities', {'p_limit': limit, 'p_market': market});
+  Future<List<Community>> popularCommunities({
+    int limit = 4,
+    Purpose? purpose,
+    PropertySegment? segment,
+  }) async {
+    final list = await _rpcList('popular_communities', {
+      'p_limit': limit,
+      'p_market': market,
+      'p_purpose': purpose?.wire,
+      'p_segment': segment?.name,
+    });
     return list.map(Community.fromJson).toList(growable: false);
   }
 

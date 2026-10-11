@@ -46,9 +46,22 @@ abstract class ListingRepository {
   Future<List<ComparableListing>> comparables(String id, {int limit = 6});
 
   /// Home "The most relevant" / Search "Best deals for you" carousels.
-  Future<List<Property>> highlights({int limit = 8});
+  ///
+  /// [purpose] (For Rent / For Sale) and [segment] (Residential / Commercial)
+  /// narrow it to what the Home toggles show; null means no filter.
+  Future<List<Property>> highlights({
+    int limit = 8,
+    Purpose? purpose,
+    PropertySegment? segment,
+  });
 
-  Future<List<Community>> popularCommunities({int limit = 4});
+  /// With [purpose] and/or [segment] set, communities are ranked by how many
+  /// matching listings they have, and `homes` counts only those.
+  Future<List<Community>> popularCommunities({
+    int limit = 4,
+    Purpose? purpose,
+    PropertySegment? segment,
+  });
 
   Future<List<SearchSuggestion>> suggest(String term);
 

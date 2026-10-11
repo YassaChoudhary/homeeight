@@ -5,6 +5,7 @@ import '../models/lister_profile.dart';
 import '../models/listing_draft.dart';
 import '../models/my_listing.dart';
 import '../models/property.dart';
+import '../models/property_category.dart';
 import '../models/search_query.dart';
 import 'listing_repository.dart';
 
@@ -140,13 +141,59 @@ class MockListingRepository implements ListingRepository {
   }
 
   @override
-  Future<List<Property>> highlights({int limit = 8}) {
-    return _respond(() => _seed.take(limit).toList(growable: false));
+  Future<List<Property>> highlights({
+    int limit = 8,
+    Purpose? purpose,
+    PropertySegment? segment,
+  }) {
+    return _respond(() => _seed
+        .where((p) => _matches(p, purpose, segment))
+        .take(limit)
+        .toList(growable: false));
+  }
+
+  /// The mock's Property has no segment field, so commercial-ness comes from
+  /// the type: office, retail, warehouse… are the commercial category wires.
+  static bool _isCommercial(Property p) =>
+      PropertyCategory.commercial.any((c) => c.wire == p.type);
+
+  static bool _matches(Property p, Purpose? purpose, PropertySegment? segment) {
+    if (purpose != null && p.purpose != purpose) return false;
+    if (segment != null &&
+        _isCommercial(p) != (segment == PropertySegment.commercial)) {
+      return false;
+    }
+    return true;
   }
 
   @override
-  Future<List<Community>> popularCommunities({int limit = 4}) {
-    return _respond(() => _communities.take(limit).toList(growable: false));
+  Future<List<Community>> popularCommunities({
+    int limit = 4,
+    Purpose? purpose,
+    PropertySegment? segment,
+  }) {
+    return _respond(() {
+      if (purpose == null && segment == null) {
+        return _communities.take(limit).toList(growable: false);
+      }
+      // Same shape as the Supabase version: rank by homes of this purpose.
+      final ranked = [
+        for (final c in _communities)
+          Community(
+            id: c.id,
+            name: c.name,
+            homes: _seed
+                .where((p) => _matches(p, purpose, segment) && p.area == c.name)
+                .length,
+            photoUrl: c.photoUrl,
+            gradientSeed: c.gradientSeed,
+          ),
+      ]
+        // Same rule as the database: with a filter on, hide "0 homes" tiles.
+        ..removeWhere((c) => c.homes == 0)
+        ..sort((a, b) => b.homes.compareTo(a.homes));
+      return ranked.take(limit).toList(growable: false);
+    });
   }
 
   @override
