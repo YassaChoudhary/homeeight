@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../core/async_value.dart';
+import '../models/geo.dart';
 import '../models/property.dart';
 import '../models/search_query.dart';
 import '../state/app_scope.dart';
@@ -13,6 +15,7 @@ import 'coming_soon_screen.dart';
 import 'filters_sheet.dart';
 import 'no_results_screen.dart';
 import 'property_detail_screen.dart';
+import 'results_map_view.dart';
 import 'sort_sheet.dart';
 
 /// Screen 10. Everything on it is now derived from the controller's query —
@@ -30,6 +33,16 @@ class ResultsScreen extends StatefulWidget {
 class _ResultsScreenState extends State<ResultsScreen> {
   late final ListingsController _controller;
   final ScrollController _scroll = ScrollController();
+
+  /// List or map. The query (and its results) is shared by both.
+  bool _mapMode = false;
+
+  /// Listing to centre the map on (a card's Map button).
+  String? _focusId;
+
+  /// Last results, kept while a new search loads so the map doesn't empty
+  /// out under the user's finger.
+  List<Property> _lastItems = const [];
 
   @override
   void initState() {
@@ -86,6 +99,40 @@ class _ResultsScreenState extends State<ResultsScreen> {
     );
   }
 
+  void _showMap({String? focusId}) {
+    setState(() {
+      _mapMode = true;
+      _focusId = focusId;
+    });
+  }
+
+  void _showList() => setState(() {
+        _mapMode = false;
+        _focusId = null;
+      });
+
+  Widget _buildMap(SearchQuery query) {
+    final state = _controller.state;
+    if (state is AsyncError<List<Property>> && _lastItems.isEmpty) {
+      return ErrorStateView(onRetry: _controller.load);
+    }
+    final market = AppScope.of(context).appState.market;
+    return ResultsMapView(
+      items: _lastItems,
+      loading: state is AsyncLoading<List<Property>>,
+      activeArea: query.bounds,
+      fallbackCenter: marketCenter(market.code),
+      focusId: _focusId,
+      onSearchArea: (bounds) =>
+          _controller.applyQuery(query.copyWith(bounds: bounds)),
+      onClearArea: () =>
+          _controller.applyQuery(query.copyWith(clearBounds: true)),
+      onOpenDetail: _openDetail,
+      // Room for the List/Map toggle under the card.
+      bottomInset: 64,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -94,6 +141,8 @@ class _ResultsScreenState extends State<ResultsScreen> {
         listenable: _controller,
         builder: (context, _) {
           final query = _controller.query;
+          final value = _controller.state.valueOrNull;
+          if (value != null) _lastItems = value;
           return Column(
             children: [
               _Header(
@@ -103,33 +152,26 @@ class _ResultsScreenState extends State<ResultsScreen> {
                 onSort: _openSort,
               ),
               Expanded(
-                child: _controller.state.when(
-                  loading: () => ListView(
-                    padding: const EdgeInsets.fromLTRB(16, 18, 16, 24),
-                    children: const [
-                      SkeletonBox(height: 18, width: 200),
-                      SizedBox(height: 18),
-                      ResultCardSkeleton(),
-                      ResultCardSkeleton(),
-                    ],
-                  ),
-                  error: (_) => ErrorStateView(onRetry: _controller.load),
-                  data: (items) {
-                    if (items.isEmpty) {
-                      return NoResultsView(
-                        query: query,
-                        onEditFilters: _openFilters,
-                        onSaveSearch: () {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text("Search saved — we'll alert you."),
-                            ),
-                          );
-                        },
-                      );
-                    }
-                    return _buildList(items);
-                  },
+                child: Stack(
+                  children: [
+                    Positioned.fill(
+                      child: _mapMode
+                          ? _buildMap(query)
+                          : _buildListBody(query),
+                    ),
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      bottom: 12,
+                      child: Center(
+                        child: _ViewToggle(
+                          mapMode: _mapMode,
+                          onList: _showList,
+                          onMap: () => _showMap(),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ],
@@ -144,6 +186,37 @@ class _ResultsScreenState extends State<ResultsScreen> {
     );
   }
 
+  Widget _buildListBody(SearchQuery query) {
+    return _controller.state.when(
+      loading: () => ListView(
+        padding: const EdgeInsets.fromLTRB(16, 18, 16, 24),
+        children: const [
+          SkeletonBox(height: 18, width: 200),
+          SizedBox(height: 18),
+          ResultCardSkeleton(),
+          ResultCardSkeleton(),
+        ],
+      ),
+      error: (_) => ErrorStateView(onRetry: _controller.load),
+      data: (items) {
+        if (items.isEmpty) {
+          return NoResultsView(
+            query: query,
+            onEditFilters: _openFilters,
+            onSaveSearch: () {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text("Search saved — we'll alert you."),
+                ),
+              );
+            },
+          );
+        }
+        return _buildList(items);
+      },
+    );
+  }
+
   Widget _buildList(List<Property> items) {
     final query = _controller.query;
     return ListView.builder(
@@ -152,7 +225,8 @@ class _ResultsScreenState extends State<ResultsScreen> {
         16,
         18,
         16,
-        HomeNavBar.reservedSpace(context) + 16,
+        // Clear of the floating List/Map toggle.
+        HomeNavBar.reservedSpace(context) + 72,
       ),
       // One extra row for the header, one for the footer.
       itemCount: items.length + 2,
@@ -231,6 +305,9 @@ class _ResultsScreenState extends State<ResultsScreen> {
           index: index,
           total: _controller.total,
           onTap: () => _openDetail(property),
+          onMapTap: property.hasLocation
+              ? () => _showMap(focusId: property.id)
+              : null,
         );
       },
     );
@@ -395,6 +472,94 @@ class _CircleBtn extends StatelessWidget {
               ),
             ),
         ],
+      ),
+    );
+  }
+}
+
+/// Floating List | Map switch over the results.
+class _ViewToggle extends StatelessWidget {
+  final bool mapMode;
+  final VoidCallback onList;
+  final VoidCallback onMap;
+
+  const _ViewToggle({
+    required this.mapMode,
+    required this.onList,
+    required this.onMap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: AppColors.navDark,
+        borderRadius: BorderRadius.circular(999),
+        boxShadow: [
+          BoxShadow(
+            color: AppColors.ink.withValues(alpha: 0.25),
+            blurRadius: 16,
+            offset: const Offset(0, 6),
+          ),
+        ],
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _ToggleSegment(
+            icon: Icons.view_agenda_outlined,
+            label: 'List',
+            selected: !mapMode,
+            onTap: onList,
+          ),
+          _ToggleSegment(
+            icon: Icons.map_outlined,
+            label: 'Map',
+            selected: mapMode,
+            onTap: onMap,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ToggleSegment extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _ToggleSegment({
+    required this.icon,
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final fg = selected ? Colors.white : Colors.white70;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: selected ? null : onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        curve: Curves.easeOutCubic,
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+        decoration: BoxDecoration(
+          color: selected ? AppColors.primary : Colors.transparent,
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 17, color: fg),
+            const SizedBox(width: 6),
+            Text(label, style: AppTextStyles.bodyStrong(color: fg)),
+          ],
+        ),
       ),
     );
   }

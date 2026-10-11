@@ -49,4 +49,15 @@ class Env {
   /// a crash on launch.
   static bool get hasSupabase =>
       supabaseUrl.isNotEmpty && supabaseAnonKey.isNotEmpty;
+
+  /// Mapbox *public* access token (starts with `pk.`). From the Mapbox
+  /// account page → Tokens → "Default public token". Publishable by design —
+  /// restrict it to the app's package name in Mapbox before launch.
+  ///
+  /// Empty means maps show a "map unavailable" panel instead of crashing.
+  static const String mapboxToken = String.fromEnvironment(
+    'MAPBOX_ACCESS_TOKEN',
+  );
+
+  static bool get hasMapbox => mapboxToken.startsWith('pk.');
 }

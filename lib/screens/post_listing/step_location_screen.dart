@@ -1,5 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
+import '../../data/geocoding_service.dart';
+import '../../models/geo.dart';
 import '../../models/listing_draft.dart';
 import '../../state/app_scope.dart';
 import '../../state/location_service.dart';
@@ -7,6 +11,7 @@ import '../../theme/app_colors.dart';
 import '../../theme/app_spacing.dart';
 import '../../theme/app_text_styles.dart';
 import '../../widgets/form_fields.dart';
+import '../../widgets/home8_map.dart';
 import '../../widgets/pill_button.dart';
 import 'post_listing_flow.dart';
 
@@ -37,10 +42,122 @@ class _StepLocationScreenState extends State<StepLocationScreen> {
 
   bool _locating = false;
 
+  final Home8MapController _map = Home8MapController();
+  final GeocodingService _geocoder = GeocodingService();
+
+  /// Address under the pin, from reverse geocoding. Offered as a one-tap
+  /// fill for the address field — never written without the seller seeing it.
+  PlaceSuggestion? _underPin;
+  bool _lookingUp = false;
+  Timer? _lookupDebounce;
+  int _lookupId = 0;
+
+  /// Results of searching the typed address.
+  List<PlaceSuggestion> _results = const [];
+  bool _searching = false;
+
+  /// The camera is about to move because the app moved it for the seller
+  /// (my location, a search result) — that move places the pin too.
+  bool _appMove = false;
+
+  /// Where the map opens: the saved pin, else the market's main city.
+  late final GeoPoint _start = _draft.latitude != null && _draft.longitude != null
+      ? GeoPoint(_draft.latitude!, _draft.longitude!)
+      : marketCenter(_draft.countryCode);
+
+  bool get _hasPin => _draft.latitude != null && _draft.longitude != null;
+
   @override
   void dispose() {
+    _lookupDebounce?.cancel();
     _address.dispose();
     super.dispose();
+  }
+
+  Future<void> _moveTo(GeoPoint point, {double zoom = 17}) async {
+    _appMove = true;
+    await _map.flyTo(point, zoom: zoom);
+  }
+
+  /// The map stopped. If the seller moved it (or the app did on their
+  /// behalf), the centre is the new pin.
+  void _onMapIdle(MapViewport viewport) {
+    if (!viewport.movedByUser && !_appMove) return;
+    _appMove = false;
+    setState(() {
+      _draft = _draft.copyWith(
+        latitude: double.parse(viewport.center.lat.toStringAsFixed(6)),
+        longitude: double.parse(viewport.center.lng.toStringAsFixed(6)),
+      );
+      _results = const [];
+    });
+    _lookupDebounce?.cancel();
+    _lookupDebounce = Timer(
+      const Duration(milliseconds: 350),
+      () => _lookUp(viewport.center),
+    );
+  }
+
+  Future<void> _lookUp(GeoPoint point) async {
+    final id = ++_lookupId;
+    setState(() => _lookingUp = true);
+    final place = await _geocoder.reverse(point);
+    if (!mounted || id != _lookupId) return;
+    setState(() {
+      _lookingUp = false;
+      _underPin = place;
+    });
+    // An empty field gets filled straight away; a typed one is left alone
+    // and the suggestion is offered instead.
+    if (place != null && _address.text.trim().isEmpty) _useSuggestion(place);
+  }
+
+  void _useSuggestion(PlaceSuggestion place) {
+    setState(() {
+      _address.text = place.addressLine;
+      _draft = _draft.copyWith(
+        community: place.community.isNotEmpty ? place.community : null,
+        city: _cities.contains(place.city) ? place.city : null,
+      );
+    });
+  }
+
+  Future<void> _searchAddress() async {
+    FocusScope.of(context).unfocus();
+    final q = _address.text.trim();
+    if (q.length < 3) return;
+    setState(() => _searching = true);
+    final results = await _geocoder.search(
+      q,
+      countryCode: _draft.countryCode,
+      near: _hasPin ? GeoPoint(_draft.latitude!, _draft.longitude!) : _start,
+    );
+    if (!mounted) return;
+    setState(() {
+      _searching = false;
+      _results = results;
+    });
+    if (results.isEmpty) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(const SnackBar(
+          content: Text('No match. Move the map to place the pin instead.'),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: AppColors.navDark,
+        ));
+    }
+  }
+
+  void _pickResult(PlaceSuggestion place) {
+    setState(() {
+      _results = const [];
+      _address.text = place.addressLine;
+      _draft = _draft.copyWith(
+        community: place.community.isNotEmpty ? place.community : null,
+        city: _cities.contains(place.city) ? place.city : null,
+      );
+    });
+    _moveTo(place.point);
   }
 
   /// Cities offered per market.
@@ -78,6 +195,9 @@ class _StepLocationScreenState extends State<StepLocationScreen> {
         longitude: place.longitude,
       );
     });
+    if (place != null) {
+      _moveTo(GeoPoint(place.latitude, place.longitude));
+    }
 
     if (place != null || !mounted) return;
     // Every failure path is a LocationOutcome, never a throw — say what
@@ -198,7 +318,14 @@ class _StepLocationScreenState extends State<StepLocationScreen> {
                               countryCode: m.code,
                               city: '',
                               currency: m.currency,
+                              // A pin in the old country is meaningless now.
+                              clearLocation: m.code != _draft.countryCode,
                             );
+                            _results = const [];
+                            _underPin = null;
+                            // Show the new country; the seller then places
+                            // the pin (this move doesn't place it).
+                            _map.flyTo(marketCenter(m.code), zoom: 11);
                           }),
                         ),
                       ),
@@ -224,13 +351,50 @@ class _StepLocationScreenState extends State<StepLocationScreen> {
                     icon: Icons.apartment_rounded,
                     hint: 'Building, street and community',
                     onChanged: (_) => setState(() {}),
-                    trailing: const Icon(Icons.search_rounded,
-                        size: 20, color: AppColors.inkMuted),
+                    trailing: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: _searching ? null : _searchAddress,
+                      child: Padding(
+                        padding: const EdgeInsets.all(4),
+                        child: _searching
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  valueColor: AlwaysStoppedAnimation<Color>(
+                                      AppColors.primary),
+                                ),
+                              )
+                            : const Icon(Icons.search_rounded,
+                                size: 22, color: AppColors.primary),
+                      ),
+                    ),
                   ),
+                  if (_results.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    _SearchResults(results: _results, onPick: _pickResult),
+                  ],
                   const SizedBox(height: 14),
-                  _MapPin(
+                  _PinMap(
+                    controller: _map,
+                    start: _start,
+                    startZoom: _hasPin ? 17 : 11,
+                    hasPin: _hasPin,
                     locating: _locating,
                     onUseMyLocation: _useMyLocation,
+                    onIdle: _onMapIdle,
+                  ),
+                  const SizedBox(height: 10),
+                  _UnderPinRow(
+                    hasPin: _hasPin,
+                    loading: _lookingUp,
+                    place: _underPin,
+                    alreadyUsed: _underPin != null &&
+                        _address.text.trim() == _underPin!.addressLine,
+                    onUse: _underPin == null
+                        ? null
+                        : () => _useSuggestion(_underPin!),
                   ),
                   const SizedBox(height: 16),
                   const InfoNote(
@@ -280,65 +444,83 @@ class _EmptyCityField extends StatelessWidget {
   }
 }
 
-/// Fake map with a draggable-looking pin.
-///
-/// No map SDK is wired anywhere in the app — `_MapPlaceholder` on the property
-/// detail screen is the same stand-in. This is deliberately one isolated
-/// widget so swapping in google_maps_flutter later is a single replacement,
-/// not a hunt. The tooltip and the "Use my location" chip are real affordances
-/// that will survive that swap.
-class _MapPin extends StatelessWidget {
+/// The real map with a fixed pin in the middle: the seller moves the map
+/// under the pin to the building's entrance. The centre becomes the listing's
+/// exact location — stored privately; buyers see an approximate area.
+class _PinMap extends StatelessWidget {
+  final Home8MapController controller;
+  final GeoPoint start;
+  final double startZoom;
+  final bool hasPin;
   final bool locating;
   final VoidCallback onUseMyLocation;
+  final ValueChanged<MapViewport> onIdle;
 
-  const _MapPin({required this.locating, required this.onUseMyLocation});
+  const _PinMap({
+    required this.controller,
+    required this.start,
+    required this.startZoom,
+    required this.hasPin,
+    required this.locating,
+    required this.onUseMyLocation,
+    required this.onIdle,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return RepaintBoundary(
-      child: Container(
-        height: 260,
-        decoration: BoxDecoration(
-          color: const Color(0xFFE8EEE9),
-          borderRadius: BorderRadius.circular(AppRadius.md),
-        ),
-        clipBehavior: Clip.antiAlias,
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(AppRadius.md),
+      child: SizedBox(
+        height: 300,
         child: Stack(
           children: [
-            CustomPaint(size: Size.infinite, painter: _MapGridPainter()),
-            Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 14, vertical: 9),
-                    decoration: BoxDecoration(
-                      color: AppColors.navDark,
-                      borderRadius: BorderRadius.circular(AppRadius.sm),
-                    ),
-                    child: Text('Drag pin to exact entrance',
-                        style: AppTextStyles.caption(color: Colors.white)
-                            .copyWith(fontWeight: FontWeight.w600)),
-                  ),
-                  const SizedBox(height: 14),
-                  Container(
-                    width: 44,
-                    height: 44,
-                    decoration: BoxDecoration(
-                      color: AppColors.primary,
-                      shape: BoxShape.circle,
-                      border: Border.all(color: Colors.white, width: 4),
-                      boxShadow: [
-                        BoxShadow(
-                          color: AppColors.ink.withValues(alpha: 0.25),
-                          blurRadius: 10,
-                          offset: const Offset(0, 4),
+            Positioned.fill(
+              child: Home8Map(
+                controller: controller,
+                initialCenter: start,
+                initialZoom: startZoom,
+                // Inside a scrolling page: drags move the map, not the page.
+                claimGestures: true,
+                onViewportIdle: onIdle,
+              ),
+            ),
+            // The pin never moves; the map moves under it. Its tip sits on
+            // the exact centre of the map.
+            IgnorePointer(
+              child: Center(
+                child: Transform.translate(
+                  offset: const Offset(0, -38),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 7),
+                        decoration: BoxDecoration(
+                          color: AppColors.navDark,
+                          borderRadius: BorderRadius.circular(AppRadius.sm),
                         ),
-                      ],
-                    ),
+                        child: Text(
+                          hasPin
+                              ? 'Move the map to adjust'
+                              : 'Move the map to your entrance',
+                          style: AppTextStyles.caption(color: Colors.white)
+                              .copyWith(fontWeight: FontWeight.w600),
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      const Icon(Icons.location_on_rounded,
+                          size: 44, color: AppColors.primary,
+                          shadows: [
+                            Shadow(
+                              color: Color(0x55000000),
+                              blurRadius: 8,
+                              offset: Offset(0, 3),
+                            ),
+                          ]),
+                    ],
                   ),
-                ],
+                ),
               ),
             ),
             PositionedDirectional(
@@ -392,20 +574,118 @@ class _MapPin extends StatelessWidget {
   }
 }
 
-class _MapGridPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = AppColors.primary.withValues(alpha: 0.12)
-      ..strokeWidth = 1;
-    for (double x = 0; x < size.width; x += 22) {
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
-    }
-    for (double y = 0; y < size.height; y += 22) {
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
-    }
-  }
+/// Under the map: the address at the pin, with "Use" to fill the field.
+class _UnderPinRow extends StatelessWidget {
+  final bool hasPin;
+  final bool loading;
+  final PlaceSuggestion? place;
+  final bool alreadyUsed;
+  final VoidCallback? onUse;
+
+  const _UnderPinRow({
+    required this.hasPin,
+    required this.loading,
+    required this.place,
+    required this.alreadyUsed,
+    required this.onUse,
+  });
 
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+  Widget build(BuildContext context) {
+    final String text;
+    if (!hasPin) {
+      text = 'No pin yet. Move the map or search the address.';
+    } else if (loading) {
+      text = 'Finding the address…';
+    } else if (place != null) {
+      text = place!.addressLine;
+    } else {
+      text = 'Pin placed.';
+    }
+    return Row(
+      children: [
+        Icon(
+          hasPin ? Icons.check_circle_rounded : Icons.info_outline_rounded,
+          size: 18,
+          color: hasPin ? AppColors.primary : AppColors.inkMuted,
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            text,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: AppTextStyles.caption(
+                color: hasPin ? AppColors.ink : AppColors.inkMuted),
+          ),
+        ),
+        if (place != null && !loading && !alreadyUsed)
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: onUse,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 6, 0, 6),
+              child: Text('Use address',
+                  style: AppTextStyles.bodyStrong(color: AppColors.primary)),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+/// Matches for the typed address.
+class _SearchResults extends StatelessWidget {
+  final List<PlaceSuggestion> results;
+  final ValueChanged<PlaceSuggestion> onPick;
+
+  const _SearchResults({required this.results, required this.onPick});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        border: Border.all(color: AppColors.line),
+      ),
+      child: Column(
+        children: [
+          for (var i = 0; i < results.length; i++) ...[
+            if (i > 0) const Divider(height: 1, color: AppColors.line),
+            InkWell(
+              onTap: () => onPick(results[i]),
+              child: Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                child: Row(
+                  children: [
+                    const Icon(Icons.place_outlined,
+                        size: 20, color: AppColors.inkMuted),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(results[i].name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: AppTextStyles.bodyStrong()),
+                          if (results[i].context.isNotEmpty)
+                            Text(results[i].context,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: AppTextStyles.caption()),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
 }

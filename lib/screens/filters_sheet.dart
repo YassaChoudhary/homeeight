@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../models/geo.dart';
 import '../models/property.dart';
 import '../models/property_category.dart';
 import '../models/search_query.dart';
@@ -10,6 +11,7 @@ import '../theme/app_colors.dart';
 import '../theme/app_spacing.dart';
 import '../theme/app_text_styles.dart';
 import '../widgets/pill_button.dart';
+import 'map/map_area_screen.dart';
 
 /// Shown at the top of the type dropdown so a chosen type can be cleared.
 /// Maps to `propertyType: null`, i.e. no type filter at all.
@@ -202,14 +204,39 @@ class _FiltersSheetState extends State<FiltersSheet> {
     );
   }
 
+  Future<void> _selectOnMap() async {
+    final market = AppScope.of(context).appState.market;
+    final bounds = await Navigator.of(context).push<GeoBounds>(
+      MaterialPageRoute(
+        builder: (_) => MapAreaScreen(
+          fallbackCenter: marketCenter(market.code),
+          initialBounds: _draft.bounds,
+        ),
+      ),
+    );
+    if (bounds == null || !mounted) return;
+    setState(() => _draft = _draft.copyWith(bounds: bounds));
+    _recount();
+  }
+
+  void _clearMapArea() {
+    setState(() => _draft = _draft.copyWith(clearBounds: true));
+    _recount();
+  }
+
   List<Widget> _commonFields() {
+    final hasArea = _draft.bounds != null;
     return [
       Row(
         children: [
           Text('Location', style: AppTextStyles.h2()),
           const Spacer(),
-          Text('Select on map',
-              style: AppTextStyles.bodyStrong(color: AppColors.primary)),
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: _selectOnMap,
+            child: Text(hasArea ? 'Change on map' : 'Select on map',
+                style: AppTextStyles.bodyStrong(color: AppColors.primary)),
+          ),
         ],
       ),
       const SizedBox(height: 10),
@@ -222,17 +249,30 @@ class _FiltersSheetState extends State<FiltersSheet> {
         ),
         child: Row(
           children: [
-            const Icon(Icons.location_on_outlined,
-                color: AppColors.inkMuted, size: 18),
+            Icon(hasArea ? Icons.map_outlined : Icons.location_on_outlined,
+                color: hasArea ? AppColors.primary : AppColors.inkMuted,
+                size: 18),
             const SizedBox(width: 10),
             Expanded(
               child: Text(
-                _draft.community ?? 'Anywhere',
+                hasArea
+                    ? 'Area picked on map'
+                    : _draft.community ?? 'Anywhere',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: AppTextStyles.bodyStrong(),
               ),
             ),
+            if (hasArea)
+              GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: _clearMapArea,
+                child: const Padding(
+                  padding: EdgeInsets.only(left: 8),
+                  child: Icon(Icons.close_rounded,
+                      size: 18, color: AppColors.inkMuted),
+                ),
+              ),
           ],
         ),
       ),

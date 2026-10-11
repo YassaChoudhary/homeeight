@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'geo.dart';
+
 enum Purpose { rent, sale }
 
 enum RentPeriod { yearly, monthly, weekly }
@@ -242,6 +244,11 @@ class Property {
   /// [available] is false.
   final String? unavailableReason;
 
+  /// Real coordinates. Never shown to buyers directly — maps use
+  /// [mapLocation], which is offset to protect the owner's exact address.
+  final double? lat;
+  final double? lng;
+
   const Property({
     required this.id,
     required this.title,
@@ -275,7 +282,17 @@ class Property {
     this.previousPrice,
     this.available = true,
     this.unavailableReason,
+    this.lat,
+    this.lng,
   });
+
+  bool get hasLocation => lat != null && lng != null;
+
+  /// The buyer-facing map position: near the listing, never exactly on it.
+  /// Null when the listing has no coordinates yet.
+  GeoPoint? get mapLocation => hasLocation
+      ? approximateLocation(id, GeoPoint(lat!, lng!))
+      : null;
 
   /// Matches the search response shape in blueprint Appendix C.1, so the API
   /// repository can hand raw JSON straight in.
@@ -319,6 +336,8 @@ class Property {
       previousPrice: (json['previous_price'] as num?)?.round(),
       available: json['available'] as bool? ?? true,
       unavailableReason: json['unavailable_reason'] as String?,
+      lat: (json['lat'] as num?)?.toDouble(),
+      lng: (json['lng'] as num?)?.toDouble(),
     );
   }
 

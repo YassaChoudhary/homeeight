@@ -59,6 +59,12 @@ dependencies:
   cloud_firestore: ^6.0.0
   google_sign_in: ^7.2.0
 
+  # Maps: Mapbox (vector maps, markers, areas; free tier, no card to start).
+  # Only lib/widgets/home8_map.dart imports it. Token: MAPBOX_ACCESS_TOKEN.
+  mapbox_maps_flutter: ^2.31.1
+  # Plain HTTPS calls (Mapbox reverse geocoding for the location picker).
+  http: ^1.2.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

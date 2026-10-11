@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'geo.dart';
 import 'property.dart';
 import 'property_category.dart';
 
@@ -38,6 +39,10 @@ class SearchQuery {
   final String? projectStatus;
   final String? developer;
 
+  /// Only listings inside this rectangle — set by "Search this area" on the
+  /// results map, or an area picked on the map from Search / Filters.
+  final GeoBounds? bounds;
+
   final int page;
   final int pageSize;
 
@@ -63,6 +68,7 @@ class SearchQuery {
     this.handoverYear,
     this.projectStatus,
     this.developer,
+    this.bounds,
     this.page = 1,
     this.pageSize = 20,
   });
@@ -89,6 +95,8 @@ class SearchQuery {
     String? handoverYear,
     String? projectStatus,
     String? developer,
+    GeoBounds? bounds,
+    bool clearBounds = false,
     int? page,
     int? pageSize,
     bool clearBeds = false,
@@ -121,6 +129,7 @@ class SearchQuery {
       handoverYear: handoverYear ?? this.handoverYear,
       projectStatus: projectStatus ?? this.projectStatus,
       developer: developer ?? this.developer,
+      bounds: clearBounds ? null : (bounds ?? this.bounds),
       page: page ?? this.page,
       pageSize: pageSize ?? this.pageSize,
     );
@@ -149,6 +158,7 @@ class SearchQuery {
       chips.add(a);
     }
     if (verifiedOnly) chips.add('Verified');
+    if (bounds != null) chips.add('Map area');
     return chips;
   }
 
@@ -163,6 +173,7 @@ class SearchQuery {
     n += amenities.length;
     if (verifiedOnly) n++;
     if (propertyType != null) n++;
+    if (bounds != null) n++;
     return n;
   }
 
@@ -197,6 +208,13 @@ class SearchQuery {
     put('handover', handoverYear);
     put('project_status', projectStatus);
     put('developer', developer);
+    final b = bounds;
+    if (b != null) {
+      map['min_lat'] = b.minLat.toStringAsFixed(6);
+      map['max_lat'] = b.maxLat.toStringAsFixed(6);
+      map['min_lng'] = b.minLng.toStringAsFixed(6);
+      map['max_lng'] = b.maxLng.toStringAsFixed(6);
+    }
     return map;
   }
 
@@ -218,6 +236,7 @@ class SearchQuery {
       setEquals(other.amenities, amenities) &&
       other.verifiedOnly == verifiedOnly &&
       other.sort == sort &&
+      other.bounds == bounds &&
       other.page == page;
 
   @override
@@ -237,6 +256,7 @@ class SearchQuery {
         Object.hashAllUnordered(amenities),
         verifiedOnly,
         sort,
+        bounds,
         page,
       );
 }

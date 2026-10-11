@@ -4,6 +4,7 @@ import '../core/async_value.dart';
 import '../models/lister_profile.dart';
 import '../models/listing_draft.dart';
 import '../models/my_listing.dart';
+import '../models/geo.dart';
 import '../models/property.dart';
 import '../models/property_category.dart';
 import '../models/search_query.dart';
@@ -85,6 +86,13 @@ class MockListingRepository implements ListingRepository {
       }
       if (query.verifiedOnly) {
         items = items.where((p) => p.verified).toList();
+      }
+      final bounds = query.bounds;
+      if (bounds != null) {
+        items = items
+            .where((p) =>
+                p.hasLocation && bounds.contains(GeoPoint(p.lat!, p.lng!)))
+            .toList();
       }
 
       switch (query.sort) {
@@ -601,6 +609,8 @@ class MockListingRepository implements ListingRepository {
   static const List<Property> _seed = [
     Property(
       id: 'p1',
+      lat: 25.0805,
+      lng: 55.1403,
       title: 'Home in Palm Jumeirah',
       area: 'Dubai Marina',
       city: 'Dubai',
@@ -648,6 +658,8 @@ class MockListingRepository implements ListingRepository {
     ),
     Property(
       id: 'p2',
+      lat: 25.1972,
+      lng: 55.2744,
       title: 'Condo in Downtown',
       area: 'Downtown',
       city: 'Dubai',
@@ -676,6 +688,8 @@ class MockListingRepository implements ListingRepository {
     ),
     Property(
       id: 'p3',
+      lat: 25.059,
+      lng: 55.209,
       title: 'Villa in JVC',
       area: 'JVC',
       city: 'Dubai',
@@ -705,6 +719,8 @@ class MockListingRepository implements ListingRepository {
     ),
     Property(
       id: 'p4',
+      lat: 25.1125,
+      lng: 55.139,
       title: 'Condo in Shoreline',
       area: 'Shoreline',
       city: 'Dubai',
@@ -730,6 +746,8 @@ class MockListingRepository implements ListingRepository {
     ),
     Property(
       id: 'p5',
+      lat: 25.086,
+      lng: 55.147,
       title: 'Marina Gate 2BR',
       area: 'Dubai Marina',
       city: 'Dubai',
@@ -755,6 +773,8 @@ class MockListingRepository implements ListingRepository {
     ),
     Property(
       id: 'p6',
+      lat: 25.079,
+      lng: 55.121,
       title: 'Penthouse in Bluewaters',
       area: 'Bluewaters',
       city: 'Dubai',
@@ -781,6 +801,8 @@ class MockListingRepository implements ListingRepository {
     ),
     Property(
       id: 'p7',
+      lat: 25.186,
+      lng: 55.265,
       title: 'Studio in Business Bay',
       area: 'Business Bay',
       city: 'Dubai',

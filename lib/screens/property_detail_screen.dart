@@ -8,12 +8,14 @@ import '../theme/app_colors.dart';
 import '../theme/app_spacing.dart';
 import '../theme/app_text_styles.dart';
 import '../widgets/app_icons.dart';
+import '../widgets/home8_map.dart';
 import '../widgets/listing_card.dart';
 import '../widgets/pill_button.dart';
 import '../widgets/property_image.dart';
 import '../widgets/state_views.dart';
 import 'fair_price_sheet.dart';
 import 'gallery_screen.dart';
+import 'map/property_map_screen.dart';
 import 'mortgage_screen.dart';
 import 'share_sheet.dart';
 
@@ -492,13 +494,15 @@ class _PropertyDetailScreenState extends State<PropertyDetailScreen> {
                     onTap: () => setState(() => _descExpanded = !_descExpanded),
                   ),
                 ],
-                if (p.addressLine.isNotEmpty) ...[
+                if (p.addressLine.isNotEmpty || p.hasLocation) ...[
                   const SizedBox(height: 26),
                   Text("Where you'll be", style: AppTextStyles.h1()),
-                  const SizedBox(height: 6),
-                  Text(p.addressLine, style: AppTextStyles.caption()),
+                  if (p.addressLine.isNotEmpty) ...[
+                    const SizedBox(height: 6),
+                    Text(p.addressLine, style: AppTextStyles.caption()),
+                  ],
                   const SizedBox(height: 12),
-                  const _MapPlaceholder(),
+                  _LocationPreview(property: p),
                 ],
                 const SizedBox(height: 26),
                 Text('Similar homes nearby', style: AppTextStyles.h1()),
@@ -910,8 +914,99 @@ class _MortgageRow extends StatelessWidget {
   }
 }
 
-/// Static stand-in until a real map SDK is wired in. Isolated in its own widget
-/// so swapping it for google_maps_flutter touches one place.
+/// Small, still map of the listing's approximate area. Tap opens the full map.
+///
+/// Shows a shaded circle, not a pin: buyers only see roughly where the home
+/// is until the owner accepts their enquiry (see `approximateLocation`).
+class _LocationPreview extends StatelessWidget {
+  final Property property;
+  const _LocationPreview({required this.property});
+
+  @override
+  Widget build(BuildContext context) {
+    final area = property.mapLocation;
+    if (area == null) return const _MapPlaceholder();
+
+    void open() => Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => PropertyMapScreen(property: property),
+          ),
+        );
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        ClipRRect(
+          borderRadius: BorderRadius.circular(AppRadius.md),
+          child: SizedBox(
+            height: 180,
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  child: Home8Map(
+                    initialCenter: area,
+                    initialZoom: 14,
+                    area: area,
+                    interactive: false,
+                    onTap: open,
+                  ),
+                ),
+                Positioned(
+                  right: 10,
+                  top: 10,
+                  child: IgnorePointer(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(999),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.12),
+                            blurRadius: 6,
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.open_in_full_rounded,
+                              size: 14, color: AppColors.ink),
+                          const SizedBox(width: 6),
+                          Text('View map',
+                              style: AppTextStyles.caption(
+                                  color: AppColors.ink)),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            const Icon(Icons.shield_outlined,
+                size: 15, color: AppColors.inkMuted),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                'Approximate area. The exact address is shared after '
+                'the owner accepts your enquiry.',
+                style: AppTextStyles.caption(),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+/// Shown when a listing has no coordinates yet.
 class _MapPlaceholder extends StatelessWidget {
   const _MapPlaceholder();
 

@@ -214,6 +214,7 @@ class ListingDraft {
     bool clearPropertyType = false,
     bool clearPeriod = false,
     bool clearTitleDeed = false,
+    bool clearLocation = false,
   }) =>
       ListingDraft(
         id: id ?? this.id,
@@ -225,8 +226,8 @@ class ListingDraft {
         city: city ?? this.city,
         address: address ?? this.address,
         community: community ?? this.community,
-        latitude: latitude ?? this.latitude,
-        longitude: longitude ?? this.longitude,
+        latitude: clearLocation ? null : (latitude ?? this.latitude),
+        longitude: clearLocation ? null : (longitude ?? this.longitude),
         beds: beds ?? this.beds,
         baths: baths ?? this.baths,
         bua: bua ?? this.bua,

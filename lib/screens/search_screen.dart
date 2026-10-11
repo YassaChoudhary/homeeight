@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../models/geo.dart';
 import '../models/property.dart';
 import '../models/search_query.dart';
 import '../state/app_scope.dart';
@@ -13,6 +14,7 @@ import '../widgets/home_nav_bar.dart';
 import '../widgets/listing_card.dart';
 import '../widgets/state_views.dart';
 import 'filters_sheet.dart';
+import 'map/map_area_screen.dart';
 import 'property_detail_screen.dart';
 import 'results_screen.dart';
 
@@ -91,7 +93,7 @@ class _SearchScreenState extends State<SearchScreen>
     super.dispose();
   }
 
-  void _goResults({String? term, String? community}) {
+  void _goResults({String? term, String? community, GeoBounds? bounds}) {
     _focus.unfocus();
     Navigator.of(context).push(
       MaterialPageRoute(
@@ -99,10 +101,27 @@ class _SearchScreenState extends State<SearchScreen>
           initialQuery: _query.copyWith(
             term: term ?? _controller.text,
             community: community,
+            bounds: bounds,
           ),
         ),
       ),
     );
+  }
+
+  /// Frame an area on the map, then show results inside it.
+  Future<void> _pickArea() async {
+    _focus.unfocus();
+    final market = AppScope.of(context).appState.market;
+    final bounds = await Navigator.of(context).push<GeoBounds>(
+      MaterialPageRoute(
+        builder: (_) => MapAreaScreen(
+          fallbackCenter: marketCenter(market.code),
+          initialBounds: _query.bounds,
+        ),
+      ),
+    );
+    if (bounds == null || !mounted) return;
+    _goResults(bounds: bounds);
   }
 
   Future<void> _openFilters() async {
@@ -180,10 +199,10 @@ class _SearchScreenState extends State<SearchScreen>
                     _buildSuggestions(),
                     const SizedBox(height: 20),
                     _ActionCard(
-                      icon: Icons.gesture_rounded,
-                      title: 'Draw area on map',
-                      subtitle: 'Sketch a custom search boundary',
-                      onTap: () => _goResults(),
+                      icon: Icons.map_outlined,
+                      title: 'Search on the map',
+                      subtitle: 'Frame the area you want to live in',
+                      onTap: _pickArea,
                     ),
                     const SizedBox(height: 12),
                     _ActionCard(

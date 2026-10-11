@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:firebase_auth/firebase_auth.dart' show FirebaseAuth;
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
+import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart' show MapboxOptions;
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'core/env.dart';
@@ -41,6 +42,14 @@ Future<void> main() async {
     debugPrint('Firebase initialised');
   } catch (error) {
     debugPrint('Firebase unavailable, using local sign-in: $error');
+  }
+
+  // Maps (Mapbox). Without a token, maps show a "Map unavailable" panel.
+  if (Env.hasMapbox) {
+    MapboxOptions.setAccessToken(Env.mapboxToken);
+    debugPrint('Mapbox token set');
+  } else {
+    debugPrint('No MAPBOX_ACCESS_TOKEN — maps disabled. Add it to env.json.');
   }
 
   // Supabase serves listings and search. It doesn't run its own login: it
