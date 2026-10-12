@@ -7,7 +7,7 @@ import '../../theme/app_text_styles.dart';
 import '../../widgets/pill_button.dart';
 import '../../widgets/property_image.dart';
 import '../lister/my_listings_screen.dart';
-import 'post_listing_flow.dart';
+import '../lister/lister_gate.dart';
 
 /// Screen 39 — "Listing submitted for review".
 ///
@@ -36,10 +36,10 @@ class ListingSubmittedScreen extends StatelessWidget {
   }
 
   void _postAnother(BuildContext context) {
-    Navigator.of(context).popUntil((route) => route.isFirst);
-    Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const PostListingFlow()),
-    );
+    final navigator = Navigator.of(context);
+    navigator.popUntil((route) => route.isFirst);
+    // Same checks as the + button (verified account).
+    startListing(navigator.context);
   }
 
   @override
@@ -176,6 +176,7 @@ class _SubmittedCard extends StatelessWidget {
             height: 58,
             child: PropertyImage(
               seed: listing.draft.gradientSeed,
+              url: listing.draft.coverUrl,
               borderRadius: BorderRadius.circular(AppRadius.sm),
               decodeWidth: 58,
             ),
@@ -194,7 +195,10 @@ class _SubmittedCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 3),
                 Text(
-                  listing.priceLine,
+                  [
+                    listing.draft.priceLine,
+                    if (listing.reference.isNotEmpty) 'Ref ${listing.reference}',
+                  ].join(' · '),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: AppTextStyles.caption(color: Colors.white70),

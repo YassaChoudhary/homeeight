@@ -65,6 +65,13 @@ dependencies:
   # Plain HTTPS calls (Mapbox reverse geocoding for the location picker).
   http: ^1.2.0
 
+  # Post a listing: photos/video from gallery or camera, PDFs for deeds and
+  # licences, the Call / WhatsApp / Email buttons, and video playback.
+  image_picker: ^1.2.4
+  file_picker: ^13.1.0
+  url_launcher: ^6.3.1
+  video_player: ^2.10.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

@@ -39,8 +39,9 @@ enum ListingStatus {
 /// is why it isn't part of [ListingStatus].
 enum ListingFilter {
   all('All'),
-  live('Live'),
+  live('Approved'),
   inReview('In review'),
+  rejected('Rejected'),
   draft('Draft');
 
   final String label;
@@ -51,6 +52,7 @@ enum ListingFilter {
         ListingFilter.live => listing.status == ListingStatus.live,
         ListingFilter.inReview => listing.status == ListingStatus.inReview,
         ListingFilter.draft => listing.status == ListingStatus.draft,
+        ListingFilter.rejected => listing.status == ListingStatus.rejected,
       };
 }
 
@@ -90,6 +92,9 @@ class MyListing {
   final int enquiries;
   final int saves;
 
+  /// Why review turned it down ("Photos are blurry"). Empty otherwise.
+  final String reviewNote;
+
   const MyListing({
     required this.id,
     required this.draft,
@@ -103,7 +108,25 @@ class MyListing {
     this.views = 0,
     this.enquiries = 0,
     this.saves = 0,
+    this.reviewNote = '',
   });
+
+  /// From the `my_listings()` / `save_listing()` / `submit_listing()` RPCs.
+  factory MyListing.fromJson(Map<String, dynamic> j) => MyListing(
+        id: j['id'] as String,
+        draft: ListingDraft.fromJson(
+            Map<String, dynamic>.from(j['draft'] as Map? ?? const {})),
+        status: ListingStatus.parse(j['status'] as String?),
+        reference: j['reference'] as String? ?? '',
+        verified: j['verified'] as bool? ?? false,
+        submittedAgo: j['submitted_ago'] as String? ?? '',
+        reviewProgress: (j['review_progress'] as num?)?.toDouble() ?? 0,
+        reviewStage: j['review_stage'] as String? ?? '',
+        views: (j['views'] as num?)?.toInt() ?? 0,
+        enquiries: (j['enquiries'] as num?)?.toInt() ?? 0,
+        saves: (j['saves'] as num?)?.toInt() ?? 0,
+        reviewNote: j['review_note'] as String? ?? '',
+      );
 
   MyListing copyWith({
     ListingDraft? draft,
@@ -131,6 +154,7 @@ class MyListing {
         views: views ?? this.views,
         enquiries: enquiries ?? this.enquiries,
         saves: saves ?? this.saves,
+        reviewNote: reviewNote,
       );
 
   String get title =>
@@ -157,6 +181,8 @@ class MyListing {
         ListingStatus.inReview => submittedAgo.isEmpty
             ? priceLine
             : '$priceLine · $submittedAgo',
+        ListingStatus.rejected =>
+          reviewNote.isEmpty ? 'Needs changes' : 'Needs changes: $reviewNote',
         _ => priceLine,
       };
 
@@ -207,6 +233,15 @@ class ListerStats {
   });
 
   static const ListerStats empty = ListerStats();
+
+  factory ListerStats.fromJson(Map<String, dynamic> j) => ListerStats(
+        saved: (j['saved'] as num?)?.toInt() ?? 0,
+        listings: (j['listings'] as num?)?.toInt() ?? 0,
+        viewings: (j['viewings'] as num?)?.toInt() ?? 0,
+        rating: (j['rating'] as num?)?.toDouble() ?? 0,
+        trustScore: (j['trust_score'] as num?)?.toInt(),
+        idVerified: j['id_verified'] as bool? ?? false,
+      );
 
   String get ratingLabel => rating <= 0 ? '—' : rating.toStringAsFixed(1);
 }
@@ -276,8 +311,60 @@ class ListingPerformance {
     this.boostPrice = '',
   });
 
+  factory ListingPerformance.fromJson(
+    String listingId,
+    PerformanceRange range,
+    Map<String, dynamic> j,
+  ) =>
+      ListingPerformance(
+        listingId: listingId,
+        range: range,
+        series: [
+          for (final p in (j['series'] as List? ?? const []))
+            if (p is Map)
+              PerformancePoint(
+                p['label'] as String? ?? '',
+                (p['value'] as num?)?.toInt() ?? 0,
+              ),
+        ],
+        totalViews: (j['total_views'] as num?)?.toInt() ?? 0,
+        enquiries: (j['enquiries'] as num?)?.toInt() ?? 0,
+        saves: (j['saves'] as num?)?.toInt() ?? 0,
+        viewsChangePct: (j['views_change_pct'] as num?)?.toDouble(),
+        conversionPct: (j['conversion_pct'] as num?)?.toDouble() ?? 0,
+        savesRank: j['saves_rank'] as String? ?? '',
+        boostPrice: j['boost_price'] as String? ?? '',
+      );
+
   /// Highest point, used to scale the chart. Never zero, so the painter can
   /// divide by it without a guard at every call site.
   int get peak =>
       series.isEmpty ? 1 : series.map((p) => p.value).reduce((a, b) => a > b ? a : b).clamp(1, 1 << 30);
+}
+
+/// Who is posting — shown on the listing's agent card. Sent with submit.
+@immutable
+class ListerSummary {
+  final String name;
+
+  /// Agency / company name. Empty for an owner.
+  final String agency;
+  final String? avatarUrl;
+
+  /// 'individual', 'agent' or 'company'.
+  final String type;
+
+  const ListerSummary({
+    required this.name,
+    this.agency = '',
+    this.avatarUrl,
+    this.type = 'individual',
+  });
+
+  Map<String, dynamic> toJson() => {
+        'name': name,
+        'agency': agency,
+        if (avatarUrl != null) 'avatar_url': avatarUrl,
+        'type': type,
+      };
 }

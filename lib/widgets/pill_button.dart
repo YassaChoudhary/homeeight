@@ -64,6 +64,9 @@ class PrimaryButton extends StatelessWidget {
   final bool loading;
   final bool glow;
 
+  /// Fill colour — teal by default; amber for the reels package.
+  final Color color;
+
   const PrimaryButton({
     super.key,
     required this.label,
@@ -73,6 +76,7 @@ class PrimaryButton extends StatelessWidget {
     this.expand = true,
     this.loading = false,
     this.glow = true,
+    this.color = AppColors.primary,
   });
 
   @override
@@ -83,14 +87,12 @@ class PrimaryButton extends StatelessWidget {
       height: 56,
       padding: EdgeInsets.symmetric(horizontal: expand ? 24 : 30),
       decoration: BoxDecoration(
-        color: enabled
-            ? AppColors.primary
-            : AppColors.primary.withValues(alpha: 0.4),
+        color: enabled ? color : color.withValues(alpha: 0.4),
         borderRadius: BorderRadius.circular(999),
         boxShadow: enabled && glow
             ? [
                 BoxShadow(
-                  color: AppColors.primary.withValues(alpha: 0.32),
+                  color: color.withValues(alpha: 0.32),
                   blurRadius: 22,
                   offset: const Offset(0, 8),
                 ),

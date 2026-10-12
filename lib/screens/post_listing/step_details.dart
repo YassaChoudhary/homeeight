@@ -1,27 +1,29 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
-import '../../core/async_value.dart';
+import '../../models/amenities.dart';
 import '../../models/listing_draft.dart';
 import '../../models/property.dart';
+import '../../models/search_query.dart';
+import '../../state/app_scope.dart';
 import '../../state/post_listing_controller.dart';
 import '../../theme/app_colors.dart';
+import '../../theme/app_spacing.dart';
 import '../../theme/app_text_styles.dart';
 import '../../widgets/form_fields.dart';
+import '../../widgets/phone_number_field.dart';
+import '../../widgets/pill_button.dart';
 
-/// Screen 34 — "Details & price", the fields of step 2.
+/// Step 2 — "Details & price" (prototype screen 40).
 ///
-/// ## The fair band is a live repository call
+/// Bedrooms · Bathrooms · Built-up area · Price · Furnishing · Title ·
+/// Description · What this place offers · Email · Phone · WhatsApp.
 ///
-/// The green callout under the price isn't a static string. It comes from
-/// `ListingRepository.priceGuidance`, debounced at 280ms, and it re-asks
-/// whenever the price, area, bedrooms, furnishing or purpose change — see
-/// `PostListingController.edit`. That means it renders all three async
-/// branches like every other data surface in the app: a quiet loading line, the
-/// band, or a retry.
+/// Plus two optional fields the listing page shows ("4 people", "6 years
+/// old"): occupancy and building age, under Furnishing.
 ///
-/// Showing a seller their price against the market at the moment they set it is
-/// the whole point of the fair-price feature; doing it after they publish is
-/// too late to change anything.
+/// The green band under the price is a live database call (`price_guidance`)
+/// built from real live listings like this one.
 class StepDetails extends StatefulWidget {
   final PostListingController controller;
 
@@ -33,15 +35,38 @@ class StepDetails extends StatefulWidget {
 
 class _StepDetailsState extends State<StepDetails> {
   static const int _titleMax = 70;
+  static const int _descriptionMax = 500;
 
   late final TextEditingController _bua;
   late final TextEditingController _price;
   late final TextEditingController _title;
+  late final TextEditingController _description;
+  late final TextEditingController _age;
+  late final TextEditingController _email;
+  late final String _initialPhone;
+  late final String _initialWhatsapp;
 
   @override
   void initState() {
     super.initState();
     final draft = widget.controller.draft;
+
+    // Contact defaults from the account, so most people never type them.
+    final user = AppScope.authOf(context).user;
+    if (draft.contactEmail.isEmpty && draft.contactPhone.isEmpty) {
+      final email = user?.email ?? '';
+      final phone = user?.phone ?? '';
+      if (email.isNotEmpty || phone.isNotEmpty) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          widget.controller.edit((d) => d.copyWith(
+                contactEmail: d.contactEmail.isEmpty ? email : null,
+                contactPhone: d.contactPhone.isEmpty ? phone : null,
+                contactWhatsapp: d.contactWhatsapp.isEmpty ? phone : null,
+              ));
+        });
+      }
+    }
+
     _bua = TextEditingController(
       text: draft.bua == null ? '' : ThousandsFormatter.group('${draft.bua}'),
     );
@@ -50,18 +75,36 @@ class _StepDetailsState extends State<StepDetails> {
           draft.price == null ? '' : ThousandsFormatter.group('${draft.price}'),
     );
     _title = TextEditingController(text: draft.title);
+    _description = TextEditingController(text: draft.description);
+    _age = TextEditingController(
+        text: draft.ageYears == null ? '' : '${draft.ageYears}');
+    _email = TextEditingController(
+        text: draft.contactEmail.isNotEmpty
+            ? draft.contactEmail
+            : (user?.email ?? ''));
+    _initialPhone = draft.contactPhone.isNotEmpty
+            ? draft.contactPhone
+            : (user?.phone ?? '');
+    _initialWhatsapp = draft.contactWhatsapp.isNotEmpty
+            ? draft.contactWhatsapp
+            : (user?.phone ?? '');
   }
 
   @override
   void dispose() {
-    _bua.dispose();
-    _price.dispose();
-    _title.dispose();
+    for (final c in [
+      _bua,
+      _price,
+      _title,
+      _description,
+      _age,
+      _email,
+    ]) {
+      c.dispose();
+    }
     super.dispose();
   }
 
-  /// Label above the price box, which has to name the period or it's ambiguous
-  /// — "96,000" means very different things yearly and monthly.
   String get _priceLabel {
     final draft = widget.controller.draft;
     if (draft.purpose == Purpose.sale) return 'Sale price';
@@ -73,10 +116,35 @@ class _StepDetailsState extends State<StepDetails> {
     };
   }
 
+  Future<void> _pickAmenities() async {
+    final controller = widget.controller;
+    final options = Amenities.forSegment(controller.draft.segment);
+    final current = controller.draft.amenities;
+    final result = await showModalBottomSheet<List<String>>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => _AmenitySheet(
+        options: [
+          ...options,
+          // Keep anything saved earlier that isn't in today's list.
+          for (final a in current)
+            if (!options.contains(a)) a,
+        ],
+        selected: current,
+      ),
+    );
+    if (result != null) {
+      controller.edit((d) => d.copyWith(amenities: result));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final controller = widget.controller;
     final draft = controller.draft;
+    final market = Market.fromCountryCode(draft.countryCode) ??
+        AppScope.of(context).appState.market;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -92,8 +160,7 @@ class _StepDetailsState extends State<StepDetails> {
                   const SizedBox(height: 8),
                   CounterField(
                     value: draft.beds,
-                    // Zero bedrooms is a studio, which is a real listing —
-                    // the floor is 0, not 1.
+                    // Zero bedrooms is a studio — a real listing.
                     min: 0,
                     max: 12,
                     onChanged: (v) =>
@@ -126,12 +193,14 @@ class _StepDetailsState extends State<StepDetails> {
         const SizedBox(height: 8),
         AppTextField(
           controller: _bua,
+          pill: true,
           hint: '0',
           keyboardType: TextInputType.number,
           formatters: const [ThousandsFormatter()],
-          onChanged: (text) => controller.edit(
-            (d) => d.copyWith(bua: ThousandsFormatter.parse(text)),
-          ),
+          onChanged: (text) => controller.edit((d) {
+            final v = ThousandsFormatter.parse(text);
+            return v == null ? d.copyWith(clearBua: true) : d.copyWith(bua: v);
+          }),
           trailing: InlineUnitPicker<AreaUnit>(
             value: draft.areaUnit,
             options: AreaUnit.values,
@@ -144,12 +213,16 @@ class _StepDetailsState extends State<StepDetails> {
         const SizedBox(height: 8),
         AppTextField(
           controller: _price,
+          pill: true,
           hint: '0',
           keyboardType: TextInputType.number,
           formatters: const [ThousandsFormatter()],
-          onChanged: (text) => controller.edit(
-            (d) => d.copyWith(price: ThousandsFormatter.parse(text)),
-          ),
+          onChanged: (text) => controller.edit((d) {
+            final v = ThousandsFormatter.parse(text);
+            return v == null
+                ? d.copyWith(clearPrice: true)
+                : d.copyWith(price: v);
+          }),
           trailing: draft.purpose == Purpose.sale
               ? Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 4),
@@ -183,6 +256,61 @@ class _StepDetailsState extends State<StepDetails> {
           ],
         ),
         const SizedBox(height: 20),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (draft.segment == PropertySegment.residential) ...[
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const FieldLabel('Max occupancy'),
+                    const SizedBox(height: 8),
+                    CounterField(
+                      // 0 = not stated.
+                      value: draft.occupancy ?? 0,
+                      min: 0,
+                      max: 30,
+                      onChanged: (v) => controller.edit((d) => v == 0
+                          ? d.copyWith(clearOccupancy: true)
+                          : d.copyWith(occupancy: v)),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 14),
+            ],
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const FieldLabel('Building age'),
+                  const SizedBox(height: 8),
+                  AppTextField(
+                    controller: _age,
+                    pill: true,
+                    hint: '0',
+                    keyboardType: TextInputType.number,
+                    formatters: [
+                      FilteringTextInputFormatter.digitsOnly,
+                      LengthLimitingTextInputFormatter(3),
+                    ],
+                    onChanged: (text) => controller.edit((d) {
+                      final v = int.tryParse(text);
+                      return v == null
+                          ? d.copyWith(clearAgeYears: true)
+                          : d.copyWith(ageYears: v);
+                    }),
+                    trailing: Text('years',
+                        style: AppTextStyles.bodyStrong(
+                            color: AppColors.inkMuted)),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 20),
         const FieldLabel('Title'),
         const SizedBox(height: 8),
         AppTextField(
@@ -190,19 +318,223 @@ class _StepDetailsState extends State<StepDetails> {
           hint: 'e.g. Bright 2BR with full sea view',
           maxLines: 2,
           maxLength: _titleMax,
+          textCapitalization: TextCapitalization.sentences,
           onChanged: (text) => controller.edit((d) => d.copyWith(title: text)),
         ),
         const SizedBox(height: 6),
         CharCount(length: _title.text.characters.length, max: _titleMax),
+        const SizedBox(height: 6),
+        const FieldLabel('Description'),
+        const SizedBox(height: 8),
+        AppTextField(
+          controller: _description,
+          hint: 'What makes it special — views, layout, building, '
+              'nearby places (at least 20 characters)',
+          minLines: 4,
+          maxLines: 8,
+          maxLength: _descriptionMax,
+          keyboardType: TextInputType.multiline,
+          textCapitalization: TextCapitalization.sentences,
+          onChanged: (text) =>
+              controller.edit((d) => d.copyWith(description: text)),
+        ),
+        const SizedBox(height: 6),
+        CharCount(
+            length: _description.text.characters.length, max: _descriptionMax),
+        if (_description.text.trim().length < 20)
+          Text('At least 20 characters',
+              style: AppTextStyles.caption(color: AppColors.inkMuted)),
+        const SizedBox(height: 6),
+        const FieldLabel('What Place Offer'),
+        const SizedBox(height: 8),
+        _SelectBox(
+          label: draft.amenities.isEmpty
+              ? 'Select'
+              : '${draft.amenities.length} selected',
+          onTap: _pickAmenities,
+        ),
+        if (draft.amenities.isNotEmpty) ...[
+          const SizedBox(height: 14),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              for (final a in draft.amenities)
+                _AmenityChip(
+                  label: a,
+                  onRemove: () => controller.edit((d) => d.copyWith(
+                        amenities:
+                            d.amenities.where((x) => x != a).toList(),
+                      )),
+                ),
+            ],
+          ),
+        ],
+        const SizedBox(height: 20),
+        const FieldLabel('Email'),
+        const SizedBox(height: 8),
+        AppTextField(
+          controller: _email,
+          pill: true,
+          hint: 'name@example.com',
+          keyboardType: TextInputType.emailAddress,
+          onChanged: (text) =>
+              controller.edit((d) => d.copyWith(contactEmail: text)),
+        ),
+        const SizedBox(height: 20),
+        const FieldLabel('Phone Number'),
+        const SizedBox(height: 8),
+        PhoneNumberField(
+          initialValue: _initialPhone,
+          defaultMarket: market,
+          onChanged: (v) =>
+              controller.edit((d) => d.copyWith(contactPhone: v)),
+        ),
+        const SizedBox(height: 20),
+        const FieldLabel('Whatsapp'),
+        const SizedBox(height: 8),
+        PhoneNumberField(
+          initialValue: _initialWhatsapp,
+          defaultMarket: market,
+          onChanged: (v) =>
+              controller.edit((d) => d.copyWith(contactWhatsapp: v)),
+        ),
       ],
     );
   }
 }
 
+/// "Select ▾" box, same shape as the other fields.
+class _SelectBox extends StatelessWidget {
+  final String label;
+  final VoidCallback onTap;
+
+  const _SelectBox({required this.label, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Pressable(
+      onTap: onTap,
+      child: Container(
+        height: 64,
+        padding: const EdgeInsetsDirectional.only(start: 18, end: 18),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: AppColors.line),
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(label,
+                  style: AppTextStyles.bodyStrong().copyWith(fontSize: 16.5)),
+            ),
+            const Icon(Icons.arrow_drop_down_rounded,
+                color: AppColors.inkMuted),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Cream chip, same as "What this place offers" on the listing page. Tap to
+/// remove.
+class _AmenityChip extends StatelessWidget {
+  final String label;
+  final VoidCallback onRemove;
+
+  const _AmenityChip({required this.label, required this.onRemove});
+
+  @override
+  Widget build(BuildContext context) {
+    return Pressable(
+      onTap: onRemove,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        decoration: BoxDecoration(
+          color: AppColors.accentTint,
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Text(label,
+            style: AppTextStyles.bodyStrong(color: AppColors.ink)),
+      ),
+    );
+  }
+}
+
+/// Multi-select list of amenities. Returns the new selection on "Done".
+class _AmenitySheet extends StatefulWidget {
+  final List<String> options;
+  final List<String> selected;
+
+  const _AmenitySheet({required this.options, required this.selected});
+
+  @override
+  State<_AmenitySheet> createState() => _AmenitySheetState();
+}
+
+class _AmenitySheetState extends State<_AmenitySheet> {
+  late final Set<String> _picked = {...widget.selected};
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      constraints: BoxConstraints(
+          maxHeight: MediaQuery.sizeOf(context).height * 0.8),
+      decoration: const BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(AppRadius.lg)),
+      ),
+      child: SafeArea(
+        top: false,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SheetDragHandle(),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(
+                  AppSpacing.screenPadding, 8, AppSpacing.screenPadding, 8),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text('What this place offers',
+                        style: AppTextStyles.h2()),
+                  ),
+                  TertiaryButton(
+                    label: 'Done',
+                    onTap: () => Navigator.of(context).pop(
+                      // Keep the catalogue's order.
+                      widget.options.where(_picked.contains).toList(),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Flexible(
+              child: ListView(
+                shrinkWrap: true,
+                children: [
+                  for (final a in widget.options)
+                    CheckboxListTile(
+                      value: _picked.contains(a),
+                      activeColor: AppColors.primary,
+                      title: Text(a, style: AppTextStyles.bodyStrong()),
+                      onChanged: (v) => setState(() {
+                        v == true ? _picked.add(a) : _picked.remove(a);
+                      }),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 /// The fair-price feedback under the price field.
-///
-/// Renders nothing at all until there's a price and an area to judge — an empty
-/// callout reserving space is noisier than no callout.
 class _PriceBandCallout extends StatelessWidget {
   final PostListingController controller;
 
@@ -216,8 +548,6 @@ class _PriceBandCallout extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(top: 12),
       child: guidance.when(
-        // A skeleton block here would flash on every keystroke pause. A quiet
-        // line of text is calmer and says the same thing.
         loading: () => Row(
           children: [
             const SizedBox(
@@ -240,44 +570,46 @@ class _PriceBandCallout extends StatelessWidget {
           actionLabel: 'Retry',
           onAction: controller.retryGuidance,
         ),
-        data: (band) => InfoNote(
-          tone: switch (band.verdict) {
-            PriceVerdict.fair => NoteTone.success,
-            PriceVerdict.low => NoteTone.info,
-            PriceVerdict.high => NoteTone.warning,
-          },
-          icon: switch (band.verdict) {
-            PriceVerdict.fair => null,
-            PriceVerdict.low => Icons.trending_down_rounded,
-            PriceVerdict.high => Icons.trending_up_rounded,
-          },
-          message: _message(band, controller.draft),
-        ),
+        data: (band) {
+          // Fewer than 3 similar live listings: say so instead of guessing.
+          if (!band.hasBands) {
+            return const InfoNote(
+              icon: Icons.info_outline_rounded,
+              message: 'Not enough similar listings nearby to judge this '
+                  'price yet.',
+            );
+          }
+          return InfoNote(
+            tone: switch (band.verdict) {
+              PriceVerdict.fair => NoteTone.success,
+              PriceVerdict.low => NoteTone.info,
+              PriceVerdict.high => NoteTone.warning,
+            },
+            icon: switch (band.verdict) {
+              PriceVerdict.fair => null,
+              PriceVerdict.low => Icons.trending_down_rounded,
+              PriceVerdict.high => Icons.trending_up_rounded,
+            },
+            message: _message(band, controller.draft),
+          );
+        },
       ),
     );
   }
 
-  /// Says what the number means for the seller, not just where it sits.
-  /// "Above the band" is a fact; "will get fewer enquiries" is the reason they
-  /// care.
   static String _message(FairPrice band, ListingDraft draft) {
     final renting = draft.purpose == Purpose.rent;
-    final range = band.hasBands
-        ? ' (${_k(band.fairLow!)}–${_k(band.fairHigh!)})'
-        : '';
-
+    final range = ' (${_k(band.fairLow!)}–${_k(band.fairHigh!)})';
     return switch (band.verdict) {
-      PriceVerdict.fair => 'Within the fair band$range for this area — likely '
-          'to ${renting ? 'rent' : 'sell'} faster.',
-      PriceVerdict.low => 'Below the fair band$range for this area. You could '
-          'ask more without losing interest.',
-      PriceVerdict.high => 'Above the fair band$range for this area — expect '
-          'fewer enquiries at this price.',
+      PriceVerdict.fair => 'Within the fair band$range for similar homes — '
+          'likely to ${renting ? 'rent' : 'sell'} faster.',
+      PriceVerdict.low => 'Below the fair band$range for similar homes. You '
+          'could ask more without losing interest.',
+      PriceVerdict.high => 'Above the fair band$range for similar homes — '
+          'expect fewer enquiries at this price.',
     };
   }
 
-  /// "88k", "1.4m" — the band edges are context, not the headline, so they get
-  /// the short form.
   static String _k(int value) {
     if (value >= 1000000) {
       final m = value / 1000000;

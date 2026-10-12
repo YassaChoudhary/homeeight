@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../models/amenities.dart';
 import '../models/geo.dart';
 import '../models/property.dart';
 import '../models/property_category.dart';
@@ -10,6 +11,7 @@ import '../state/app_scope.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_spacing.dart';
 import '../theme/app_text_styles.dart';
+import '../widgets/form_fields.dart';
 import '../widgets/pill_button.dart';
 import 'map/map_area_screen.dart';
 
@@ -17,17 +19,7 @@ import 'map/map_area_screen.dart';
 /// Maps to `propertyType: null`, i.e. no type filter at all.
 const _anyType = 'Any';
 
-const _offPlanPurpose = ['All', 'Initial Sale', 'Resale', 'Assignment'];
-const _percentBands = ['Under 25%', '25 to 50%', '51 to 75%', '76 to 100%'];
-const _handoverYears = ['2026', '2027', '2028', '2029'];
-const _projectStatus = ['Under Construction', 'Completed'];
-const _amenityOptions = [
-  'Shared Pool',
-  'Private Gym',
-  'Covered Parking',
-  'Sea View',
-  "Maid's Room",
-];
+const _furnishingOptions = ['Any', 'Furnished', 'Unfurnished', 'Partly'];
 
 /// Screen 13. Edits a local copy of the caller's [SearchQuery] and returns it
 /// on Apply — no global mutation, and the caller decides what to do with it.
@@ -45,15 +37,16 @@ class FiltersSheet extends StatefulWidget {
 
 class _FiltersSheetState extends State<FiltersSheet> {
   late SearchQuery _draft = widget.query;
-  late final TextEditingController _developer =
-      TextEditingController(text: widget.query.developer ?? '');
+  late final TextEditingController _priceMin = _numField(widget.query.priceMin);
+  late final TextEditingController _priceMax = _numField(widget.query.priceMax);
+  late final TextEditingController _buaMin = _numField(widget.query.buaMin);
+  late final TextEditingController _buaMax = _numField(widget.query.buaMax);
+
+  static TextEditingController _numField(int? v) => TextEditingController(
+      text: v == null ? '' : ThousandsFormatter.group('$v'));
 
   final ValueNotifier<int?> _count = ValueNotifier<int?>(null);
   Timer? _debounce;
-
-  static const int _priceCeiling = 300000;
-  static const int _buaFloor = 100;
-  static const int _buaCeiling = 5000;
 
   @override
   void initState() {
@@ -64,7 +57,10 @@ class _FiltersSheetState extends State<FiltersSheet> {
   @override
   void dispose() {
     _debounce?.cancel();
-    _developer.dispose();
+    _priceMin.dispose();
+    _priceMax.dispose();
+    _buaMin.dispose();
+    _buaMax.dispose();
     _count.dispose();
     super.dispose();
   }
@@ -115,6 +111,24 @@ class _FiltersSheetState extends State<FiltersSheet> {
     _recount();
   }
 
+  static int? _read(TextEditingController c) {
+    final v = ThousandsFormatter.parse(c.text);
+    return v == null || v <= 0 ? null : v;
+  }
+
+  /// Typed min / max → the query (swapped if entered the wrong way round).
+  void _syncPrice() {
+    var lo = _read(_priceMin), hi = _read(_priceMax);
+    if (lo != null && hi != null && lo > hi) (lo, hi) = (hi, lo);
+    _patch((q) => q.copyWith(clearPrice: true, priceMin: lo, priceMax: hi));
+  }
+
+  void _syncBua() {
+    var lo = _read(_buaMin), hi = _read(_buaMax);
+    if (lo != null && hi != null && lo > hi) (lo, hi) = (hi, lo);
+    _patch((q) => q.copyWith(clearBua: true, buaMin: lo, buaMax: hi));
+  }
+
   void _recount() {
     _debounce?.cancel();
     _count.value = null;
@@ -135,10 +149,12 @@ class _FiltersSheetState extends State<FiltersSheet> {
       _draft = SearchQuery(
         purpose: _draft.purpose,
         segment: _draft.segment,
-        community: _draft.community,
         term: _draft.term,
+        sort: _draft.sort,
       );
-      _developer.clear();
+      for (final c in [_priceMin, _priceMax, _buaMin, _buaMax]) {
+        c.clear();
+      }
     });
     _recount();
   }
@@ -187,9 +203,7 @@ class _FiltersSheetState extends State<FiltersSheet> {
                   child: ListView(
                     controller: scrollController,
                     padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
-                    children: _draft.isOffPlan
-                        ? [..._commonFields(), ..._offPlanFields()]
-                        : [..._commonFields(), ..._standardFields()],
+                    children: [..._commonFields(), ..._standardFields()],
                   ),
                 ),
                 _Footer(
@@ -215,12 +229,14 @@ class _FiltersSheetState extends State<FiltersSheet> {
       ),
     );
     if (bounds == null || !mounted) return;
-    setState(() => _draft = _draft.copyWith(bounds: bounds));
+    setState(() =>
+        _draft = _draft.copyWith(bounds: bounds, clearCommunity: true));
     _recount();
   }
 
   void _clearMapArea() {
-    setState(() => _draft = _draft.copyWith(clearBounds: true));
+    setState(() => _draft =
+        _draft.copyWith(clearBounds: true, clearCommunity: true));
     _recount();
   }
 
@@ -263,7 +279,7 @@ class _FiltersSheetState extends State<FiltersSheet> {
                 style: AppTextStyles.bodyStrong(),
               ),
             ),
-            if (hasArea)
+            if (hasArea || _draft.community != null)
               GestureDetector(
                 behavior: HitTestBehavior.opaque,
                 onTap: _clearMapArea,
@@ -331,50 +347,26 @@ class _FiltersSheetState extends State<FiltersSheet> {
         onChanged: _setType,
       ),
       const SizedBox(height: 22),
-      Row(
-        children: [
-          Text('Price Range', style: AppTextStyles.h2()),
-          const Spacer(),
-          AppStateBuilder(
-            builder: (context, state) => Row(
-              children: [
-                Text(state.currency,
-                    style: AppTextStyles.bodyStrong(color: AppColors.primary)),
-                const Icon(Icons.keyboard_arrow_down_rounded,
-                    color: AppColors.primary),
-              ],
+      AppStateBuilder(
+        builder: (context, state) => Row(
+          children: [
+            Text('Price Range', style: AppTextStyles.h2()),
+            const Spacer(),
+            Text(
+              _draft.purpose == Purpose.rent
+                  ? '${state.currency} · per period'
+                  : state.currency,
+              style: AppTextStyles.caption(color: AppColors.primary)
+                  .copyWith(fontWeight: FontWeight.w700),
             ),
-          ),
-        ],
-      ),
-      RangeSlider(
-        values: RangeValues(
-          (_draft.priceMin ?? 0).toDouble().clamp(0, _priceCeiling.toDouble()),
-          (_draft.priceMax ?? _priceCeiling)
-              .toDouble()
-              .clamp(0, _priceCeiling.toDouble()),
+          ],
         ),
-        min: 0,
-        max: _priceCeiling.toDouble(),
-        divisions: 60,
-        activeColor: AppColors.primary,
-        inactiveColor: AppColors.line,
-        onChanged: (v) => _patch((q) => q.copyWith(
-              priceMin: v.start.round(),
-              priceMax: v.end.round(),
-            )),
       ),
-      Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text('AED ${formatThousands(_draft.priceMin ?? 0)}',
-              style: AppTextStyles.bodyStrong()),
-          Text(
-            'AED ${formatThousands(_draft.priceMax ?? _priceCeiling)}'
-            '${_draft.purpose == Purpose.rent ? " / year" : ""}',
-            style: AppTextStyles.bodyStrong(),
-          ),
-        ],
+      const SizedBox(height: 10),
+      _MinMaxRow(
+        min: _priceMin,
+        max: _priceMax,
+        onChanged: _syncPrice,
       ),
     ];
   }
@@ -408,47 +400,27 @@ class _FiltersSheetState extends State<FiltersSheet> {
         ],
       ),
       const SizedBox(height: 22),
-      Text('Area Size (BUA, sqft)', style: AppTextStyles.h2()),
-      RangeSlider(
-        values: RangeValues(
-          (_draft.buaMin ?? _buaFloor)
-              .toDouble()
-              .clamp(_buaFloor.toDouble(), _buaCeiling.toDouble()),
-          (_draft.buaMax ?? 2000)
-              .toDouble()
-              .clamp(_buaFloor.toDouble(), _buaCeiling.toDouble()),
-        ),
-        min: _buaFloor.toDouble(),
-        max: _buaCeiling.toDouble(),
-        divisions: 49,
-        activeColor: AppColors.primary,
-        inactiveColor: AppColors.line,
-        onChanged: (v) => _patch((q) => q.copyWith(
-              buaMin: v.start.round(),
-              buaMax: v.end.round(),
-            )),
-      ),
-      Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text('${_draft.buaMin ?? _buaFloor}',
-              style: AppTextStyles.bodyStrong()),
-          Text('${_draft.buaMax ?? 2000}', style: AppTextStyles.bodyStrong()),
-        ],
+      Text('Built-up Area (sqft)', style: AppTextStyles.h2()),
+      const SizedBox(height: 10),
+      _MinMaxRow(
+        min: _buaMin,
+        max: _buaMax,
+        onChanged: _syncBua,
       ),
       const SizedBox(height: 22),
       Text('Furnishing', style: AppTextStyles.h2()),
       const SizedBox(height: 10),
-      Row(
+      Wrap(
+        spacing: 10,
+        runSpacing: 10,
         children: [
-          for (final option in ['Any', 'Furnished', 'Unfurnished'])
-            Padding(
-              padding: const EdgeInsetsDirectional.only(end: 10),
-              child: _ChoicePill(
-                label: option,
-                active: (_draft.furnishing ?? 'Any') == option,
-                onTap: () => _patch((q) => q.copyWith(furnishing: option)),
-              ),
+          for (final option in _furnishingOptions)
+            _ChoicePill(
+              label: option,
+              active: (_draft.furnishing ?? 'Any') == option,
+              onTap: () => _patch((q) => option == 'Any'
+                  ? q.copyWith(clearFurnishing: true)
+                  : q.copyWith(furnishing: option)),
             ),
         ],
       ),
@@ -459,7 +431,7 @@ class _FiltersSheetState extends State<FiltersSheet> {
         spacing: 10,
         runSpacing: 10,
         children: [
-          for (final amenity in _amenityOptions)
+          for (final amenity in Amenities.forSegment(_draft.segment))
             _AmenityChip(
               label: amenity,
               selected: _draft.amenities.contains(amenity),
@@ -515,70 +487,42 @@ class _FiltersSheetState extends State<FiltersSheet> {
     ];
   }
 
-  List<Widget> _offPlanFields() {
-    return [
-      const SizedBox(height: 22),
-      Text('Sale Type', style: AppTextStyles.h2()),
-      const SizedBox(height: 10),
-      _PillRow(
-        options: _offPlanPurpose,
-        selected: _draft.offPlanPurpose ?? 'All',
-        onChanged: (v) => _patch((q) => q.copyWith(offPlanPurpose: v)),
-      ),
-      const SizedBox(height: 22),
-      Text('Project Completion', style: AppTextStyles.h2()),
-      const SizedBox(height: 10),
-      _PillRow(
-        options: _percentBands,
-        selected: _draft.projectCompletion ?? _percentBands.first,
-        onChanged: (v) => _patch((q) => q.copyWith(projectCompletion: v)),
-      ),
-      const SizedBox(height: 22),
-      Text('Pre-handover Payment', style: AppTextStyles.h2()),
-      const SizedBox(height: 10),
-      _PillRow(
-        options: _percentBands,
-        selected: _draft.prehandoverPayment ?? _percentBands.first,
-        onChanged: (v) => _patch((q) => q.copyWith(prehandoverPayment: v)),
-      ),
-      const SizedBox(height: 22),
-      Text('Handover', style: AppTextStyles.h2()),
-      const SizedBox(height: 10),
-      _PillRow(
-        options: _handoverYears,
-        selected: _draft.handoverYear ?? _handoverYears.first,
-        onChanged: (v) => _patch((q) => q.copyWith(handoverYear: v)),
-      ),
-      const SizedBox(height: 22),
-      Text('Project Status', style: AppTextStyles.h2()),
-      const SizedBox(height: 10),
-      _PillRow(
-        options: _projectStatus,
-        selected: _draft.projectStatus ?? _projectStatus.first,
-        onChanged: (v) => _patch((q) => q.copyWith(projectStatus: v)),
-      ),
-      const SizedBox(height: 22),
-      Text('Developer', style: AppTextStyles.h2()),
-      const SizedBox(height: 10),
-      Container(
-        height: 52,
-        padding: const EdgeInsets.symmetric(horizontal: 16),
-        decoration: BoxDecoration(
-          border: Border.all(color: AppColors.line),
-          borderRadius: BorderRadius.circular(999),
-        ),
-        child: TextField(
-          controller: _developer,
-          style: AppTextStyles.body(),
-          onChanged: (v) => _patch((q) => q.copyWith(developer: v)),
-          decoration: InputDecoration(
-            border: InputBorder.none,
-            hintText: 'e.g. Emaar Properties PJSC',
-            hintStyle: AppTextStyles.body(color: AppColors.inkMuted),
+}
+
+/// Min – Max number inputs with thousands separators.
+class _MinMaxRow extends StatelessWidget {
+  final TextEditingController min;
+  final TextEditingController max;
+  final VoidCallback onChanged;
+
+  const _MinMaxRow({
+    required this.min,
+    required this.max,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    Widget field(TextEditingController c, String hint) => Expanded(
+          child: AppTextField(
+            controller: c,
+            pill: true,
+            hint: hint,
+            keyboardType: TextInputType.number,
+            formatters: const [ThousandsFormatter()],
+            onChanged: (_) => onChanged(),
           ),
+        );
+    return Row(
+      children: [
+        field(min, 'Min'),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          child: Text('–', style: AppTextStyles.h2()),
         ),
-      ),
-    ];
+        field(max, 'Max'),
+      ],
+    );
   }
 }
 
@@ -723,35 +667,6 @@ class _AmenityChip extends StatelessWidget {
               const Icon(Icons.check_rounded, size: 15, color: AppColors.accent),
             ],
           ],
-        ),
-      ),
-    );
-  }
-}
-
-class _PillRow extends StatelessWidget {
-  final List<String> options;
-  final String selected;
-  final ValueChanged<String> onChanged;
-
-  const _PillRow({
-    required this.options,
-    required this.selected,
-    required this.onChanged,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      height: 46,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        itemCount: options.length,
-        separatorBuilder: (_, _) => const SizedBox(width: 10),
-        itemBuilder: (context, i) => _ChoicePill(
-          label: options[i],
-          active: options[i] == selected,
-          onTap: () => onChanged(options[i]),
         ),
       ),
     );

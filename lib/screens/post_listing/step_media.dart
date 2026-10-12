@@ -3,76 +3,68 @@ import 'package:flutter/material.dart';
 import '../../models/listing_draft.dart';
 import '../../state/post_listing_controller.dart';
 import '../../theme/app_colors.dart';
-import '../../theme/app_spacing.dart';
+import '../../theme/app_spacing.dart' show AppRadius;
 import '../../theme/app_text_styles.dart';
 import '../../widgets/form_fields.dart';
+import '../../widgets/media_picker.dart';
 import '../../widgets/pill_button.dart';
 import '../../widgets/property_image.dart';
 
-/// Screen 35 — "Add photos & media", the fields of step 3.
+/// Step 3 — "Add photos & media" (prototype screen 41).
 ///
-/// ## No picker yet, and why the flow still works
+/// Photos come from the gallery (several at once) or the camera, are shrunk
+/// on the phone and upload to Supabase Storage straight away — each tile
+/// shows the picked image with a spinner until it's up. A failed one shows
+/// "Retry". The first photo (or the one marked) is the cover buyers see.
 ///
-/// `image_picker` isn't a dependency. Adding it needs an Android manifest entry
-/// and an iOS `Info.plist` usage string, neither of which can be verified from
-/// the environment this was written in — and a listing flow that crashes on the
-/// photo step is worse than one that mocks it.
-///
-/// So "Add photos" attaches a `DraftPhoto` with a gradient seed instead of a
-/// file. `PropertyImage` already renders those as distinct brand gradients (no
-/// photography shipped with the app at all), so the grid, the cover badge, the
-/// remove buttons, the 8-photo nudge and the completeness rule are all
-/// exercised for real.
-///
-/// To wire the real thing: replace the body of [_addPhoto] with the picker call
-/// and set `DraftPhoto.localPath`. Nothing else on this screen changes.
+/// Video: up to 60 s / 50 MB, uploaded to Storage too.
+/// 360° tour: a request we record ("Requested") — a person follows up.
 class StepMedia extends StatelessWidget {
   final PostListingController controller;
 
   const StepMedia({super.key, required this.controller});
 
-  /// Eight is where the enquiry numbers actually move, so it's the number the
-  /// copy quotes and the number the progress hint counts towards.
   static const int _targetPhotos = 8;
 
-  void _addPhoto() {
-    controller.edit((draft) {
-      final next = List<DraftPhoto>.from(draft.photos);
-      next.add(
-        DraftPhoto(
-          id: 'ph_${DateTime.now().microsecondsSinceEpoch}',
-          // Spread the gradients so consecutive additions look different.
-          seed: (draft.photos.length * 3 + 1),
-        ),
-      );
-      return draft.copyWith(photos: next);
-    });
+  Future<void> _addPhotos(BuildContext context) async {
+    final room = PostListingController.maxPhotos - controller.draft.photos.length;
+    if (room <= 0) {
+      _tell(context, 'That\'s the maximum of ${PostListingController.maxPhotos} photos.');
+      return;
+    }
+    final files = await MediaPicker.photos(context, limit: room);
+    if (files.isEmpty) return;
+    await controller.addPhotos(files);
+    if (!context.mounted) return;
+    if (controller.draft.photos.any((p) => p.state == PhotoUploadState.failed)) {
+      _tell(context, controller.errorMessage);
+    }
   }
 
-  void _removePhoto(String id) {
-    controller.edit((draft) {
-      final next = draft.photos.where((p) => p.id != id).toList();
-      // Removing the cover has to move the cover, or coverIndex points past
-      // the end of the list and the preview renders the wrong photo.
-      final removedIndex = draft.photos.indexWhere((p) => p.id == id);
-      var cover = draft.coverIndex;
-      if (removedIndex <= cover && cover > 0) cover -= 1;
-      return draft.copyWith(
-        photos: next,
-        coverIndex: next.isEmpty ? 0 : cover.clamp(0, next.length - 1),
-      );
-    });
+  Future<void> _addVideo(BuildContext context) async {
+    final file = await MediaPicker.video(context);
+    if (file == null) return;
+    final ok = await controller.uploadDoc(DocSlot.video, file);
+    if (!ok && context.mounted) _tell(context, controller.errorMessage);
   }
 
-  void _setCover(int index) =>
-      controller.edit((draft) => draft.copyWith(coverIndex: index));
+  static void _tell(BuildContext context, String message) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(
+        content: Text(message),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: AppColors.navDark,
+      ));
+  }
 
   @override
   Widget build(BuildContext context) {
     final draft = controller.draft;
     final photos = draft.photos;
-    final cover = draft.coverIndex.clamp(0, photos.isEmpty ? 0 : photos.length - 1);
-    final remaining = _targetPhotos - photos.length;
+    final cover =
+        draft.coverIndex.clamp(0, photos.isEmpty ? 0 : photos.length - 1);
+    final videoUploading = controller.isUploading(DocSlot.video);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -82,32 +74,24 @@ class StepMedia extends StatelessWidget {
           style: AppTextStyles.body(color: AppColors.inkMuted),
         ),
         const SizedBox(height: 18),
-        if (photos.isEmpty)
-          DashedAddTile(
-            label: 'Add your first photo',
-            icon: Icons.add_photo_alternate_outlined,
-            height: 190,
-            inline: false,
-            onTap: _addPhoto,
-          )
-        else ...[
-          // The cover gets the full width because it's the only photo most
-          // people will ever see — it's the card image in every search result.
+        if (photos.isNotEmpty) ...[
           _PhotoFrame(
             photo: photos[cover],
             height: 190,
             isCover: true,
-            onRemove: () => _removePhoto(photos[cover].id),
+            onRemove: () => controller.removePhoto(photos[cover].id),
+            onRetry: () => controller.retryPhoto(photos[cover].id),
           ),
           const SizedBox(height: 12),
           _PhotoGrid(
             photos: photos,
             coverIndex: cover,
-            onRemove: _removePhoto,
-            onSetCover: _setCover,
+            onRemove: controller.removePhoto,
+            onSetCover: controller.setCover,
+            onRetry: controller.retryPhoto,
           ),
+          const SizedBox(height: 12),
         ],
-        const SizedBox(height: 12),
         Row(
           children: [
             Expanded(
@@ -116,36 +100,33 @@ class StepMedia extends StatelessWidget {
                 icon: Icons.add_rounded,
                 height: 108,
                 inline: false,
-                onTap: _addPhoto,
+                onTap: () => _addPhotos(context),
               ),
             ),
             const SizedBox(width: 12),
             Expanded(
-              child: DashedAddTile(
-                label: 'Add video',
-                icon: Icons.play_arrow_rounded,
-                tint: AppColors.amber,
-                tintBg: const Color(0xFFFCEBD2),
-                height: 108,
-                inline: false,
-                // Video goes to Cloudflare Stream rather than Supabase Storage
-                // (transcoding and adaptive bitrate), so this stays a stub
-                // until that account exists. Flipping the flag lets the rest of
-                // the flow — the preview badge, the submitted card — behave as
-                // though a video is attached.
-                onTap: () => controller
-                    .edit((d) => d.copyWith(hasVideo: !d.hasVideo)),
-              ),
+              child: videoUploading
+                  ? const _BusyTile(label: 'Uploading video…')
+                  : DashedAddTile(
+                      label: draft.hasVideo ? 'Replace video' : 'Add video',
+                      icon: Icons.play_arrow_rounded,
+                      tint: AppColors.amber,
+                      tintBg: const Color(0xFFFCEBD2),
+                      height: 108,
+                      inline: false,
+                      onTap: () => _addVideo(context),
+                    ),
             ),
           ],
         ),
-        if (draft.hasVideo) ...[
+        if (draft.video != null) ...[
           const SizedBox(height: 12),
-          const UploadedRow(
+          UploadedRow(
             fileName: 'Walkthrough video',
-            statusLine: 'Attached · uploads on publish',
+            statusLine: draft.video!.statusLine,
             icon: Icons.videocam_outlined,
-            showTick: true,
+            actionLabel: 'Remove',
+            onAction: () => controller.removeDoc(DocSlot.video),
           ),
         ],
         const SizedBox(height: 16),
@@ -154,37 +135,62 @@ class StepMedia extends StatelessWidget {
           onBook: () =>
               controller.edit((d) => d.copyWith(tourBooked: !d.tourBooked)),
         ),
-        const SizedBox(height: 16),
-        const InfoNote(
-          tone: NoteTone.warning,
-          icon: Icons.error_outline_rounded,
-          message: 'Photos are auto-checked — watermarked or stolen images '
-              'will fail verification.',
-        ),
-        if (photos.isNotEmpty && remaining > 0) ...[
-          const SizedBox(height: 12),
-          Text(
-            '$remaining more to reach $_targetPhotos.',
-            style: AppTextStyles.caption(),
-          ),
+        if (photos.isNotEmpty && draft.uploadedPhotoCount < 2) ...[
+          const SizedBox(height: 14),
+          Text('Add at least 2 photos to continue.',
+              style: AppTextStyles.caption()),
         ],
       ],
     );
   }
 }
 
-/// The secondary photo strip under the cover.
+class _BusyTile extends StatelessWidget {
+  final String label;
+  const _BusyTile({required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    return CustomPaint(
+      painter: const DashedBorderPainter(),
+      child: SizedBox(
+        height: 108,
+        width: double.infinity,
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const SizedBox(
+              width: 26,
+              height: 26,
+              child: CircularProgressIndicator(
+                strokeWidth: 2.4,
+                valueColor: AlwaysStoppedAnimation<Color>(AppColors.amber),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(label,
+                style: AppTextStyles.bodyStrong(color: AppColors.amber)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// The photos under the cover, two per row.
 class _PhotoGrid extends StatelessWidget {
   final List<DraftPhoto> photos;
   final int coverIndex;
   final ValueChanged<String> onRemove;
   final ValueChanged<int> onSetCover;
+  final ValueChanged<String> onRetry;
 
   const _PhotoGrid({
     required this.photos,
     required this.coverIndex,
     required this.onRemove,
     required this.onSetCover,
+    required this.onRetry,
   });
 
   @override
@@ -204,7 +210,7 @@ class _PhotoGrid extends StatelessWidget {
         crossAxisCount: 2,
         mainAxisSpacing: 12,
         crossAxisSpacing: 12,
-        childAspectRatio: 1.28,
+        childAspectRatio: 1.5,
       ),
       itemBuilder: (context, i) {
         final index = others[i];
@@ -214,6 +220,7 @@ class _PhotoGrid extends StatelessWidget {
           isCover: false,
           onRemove: () => onRemove(photos[index].id),
           onSetCover: () => onSetCover(index),
+          onRetry: () => onRetry(photos[index].id),
         );
       },
     );
@@ -226,30 +233,70 @@ class _PhotoFrame extends StatelessWidget {
   final bool isCover;
   final VoidCallback onRemove;
   final VoidCallback? onSetCover;
+  final VoidCallback onRetry;
 
   const _PhotoFrame({
     required this.photo,
     required this.height,
     required this.isCover,
     required this.onRemove,
+    required this.onRetry,
     this.onSetCover,
   });
 
   @override
   Widget build(BuildContext context) {
     final width = MediaQuery.sizeOf(context).width;
+    final dpr = MediaQuery.devicePixelRatioOf(context);
+    final bytes = photo.bytes;
+    final decode = ((isCover ? width : width / 2) * dpr).round();
 
     return SizedBox(
       height: height,
       child: PropertyImage(
         seed: photo.seed,
-        url: photo.remoteUrl,
-        borderRadius: BorderRadius.circular(AppRadius.md),
-        // Always passed — decoding a full-res photo into a 110pt tile is the
-        // single biggest source of dropped frames in this app.
+        url: bytes == null ? photo.remoteUrl : null,
+        borderRadius: BorderRadius.circular(AppRadius.lg),
         decodeWidth: isCover ? width : width / 2,
         child: Stack(
+          fit: StackFit.expand,
           children: [
+            if (bytes != null)
+              Image.memory(bytes,
+                  fit: BoxFit.cover, cacheWidth: decode, gaplessPlayback: true),
+            if (photo.state == PhotoUploadState.uploading)
+              Container(
+                color: Colors.black.withValues(alpha: 0.35),
+                alignment: Alignment.center,
+                child: const SizedBox(
+                  width: 28,
+                  height: 28,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2.6,
+                    valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                  ),
+                ),
+              ),
+            if (photo.state == PhotoUploadState.failed)
+              GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: onRetry,
+                child: Container(
+                  color: Colors.black.withValues(alpha: 0.5),
+                  alignment: Alignment.center,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.refresh_rounded,
+                          color: Colors.white, size: 26),
+                      const SizedBox(height: 4),
+                      Text('Upload failed · Retry',
+                          style: AppTextStyles.caption(color: Colors.white)
+                              .copyWith(fontWeight: FontWeight.w700)),
+                    ],
+                  ),
+                ),
+              ),
             if (isCover)
               PositionedDirectional(
                 start: 10,
@@ -266,7 +313,8 @@ class _PhotoFrame extends StatelessWidget {
                           .copyWith(fontWeight: FontWeight.w700)),
                 ),
               )
-            else if (onSetCover != null)
+            else if (onSetCover != null &&
+                photo.state == PhotoUploadState.done)
               PositionedDirectional(
                 start: 8,
                 bottom: 8,
@@ -291,14 +339,14 @@ class _PhotoFrame extends StatelessWidget {
               child: Pressable(
                 onTap: onRemove,
                 child: Container(
-                  width: 28,
-                  height: 28,
+                  width: 30,
+                  height: 30,
                   decoration: BoxDecoration(
                     color: Colors.black.withValues(alpha: 0.45),
                     shape: BoxShape.circle,
                   ),
                   child: const Icon(Icons.close_rounded,
-                      color: Colors.white, size: 16),
+                      color: Colors.white, size: 17),
                 ),
               ),
             ),
@@ -309,30 +357,36 @@ class _PhotoFrame extends StatelessWidget {
   }
 }
 
-/// The paid 360° capture upsell.
+/// "360° virtual tour — Book a Home8 capture visit — AED 149".
+///
+/// Payments aren't live, so "Book" records the request on the listing and a
+/// person follows up; the button then reads "Requested".
 class _TourRow extends StatelessWidget {
   final bool booked;
   final VoidCallback onBook;
 
-  const _TourRow({required this.booked, required this.onBook});
+  const _TourRow({
+    required this.booked,
+    required this.onBook,
+  });
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: AppColors.surface,
-        borderRadius: BorderRadius.circular(AppRadius.md),
+        borderRadius: BorderRadius.circular(AppRadius.lg),
         border: Border.all(color: AppColors.line),
       ),
       child: Row(
         children: [
           Container(
-            width: 46,
-            height: 46,
+            width: 52,
+            height: 52,
             decoration: BoxDecoration(
               color: AppColors.primaryTint,
-              borderRadius: BorderRadius.circular(AppRadius.sm),
+              borderRadius: BorderRadius.circular(AppRadius.md),
             ),
             child: const Icon(Icons.threesixty_rounded,
                 size: 24, color: AppColors.primary),
@@ -351,8 +405,6 @@ class _TourRow extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 10),
-          // No payment flow exists, so this records the intent and nothing
-          // more. It reads as "requested", not "paid for", on purpose.
           Pressable(
             onTap: onBook,
             child: Container(

@@ -4,7 +4,7 @@ import 'geo.dart';
 
 enum Purpose { rent, sale }
 
-enum RentPeriod { yearly, monthly, weekly }
+enum RentPeriod { yearly, monthly, weekly, nightly }
 
 enum PriceVerdict { low, fair, high }
 
@@ -21,14 +21,43 @@ extension RentPeriodX on RentPeriod {
         RentPeriod.yearly => 'year',
         RentPeriod.monthly => 'month',
         RentPeriod.weekly => 'week',
+        RentPeriod.nightly => 'night',
       };
 
   static RentPeriod? parse(String? v) => switch (v) {
         'yearly' => RentPeriod.yearly,
         'monthly' => RentPeriod.monthly,
         'weekly' => RentPeriod.weekly,
+        'nightly' => RentPeriod.nightly,
         _ => null,
       };
+}
+
+/// The lister's contact details for one listing.
+@immutable
+class ListingContact {
+  final String? phone;
+  final String? whatsapp;
+  final String? email;
+
+  const ListingContact({this.phone, this.whatsapp, this.email});
+
+  static const ListingContact none = ListingContact();
+
+  factory ListingContact.fromJson(Map<String, dynamic> json) {
+    String? clean(Object? v) {
+      final s = (v as String?)?.trim();
+      return s == null || s.isEmpty ? null : s;
+    }
+
+    return ListingContact(
+      phone: clean(json['phone']),
+      whatsapp: clean(json['whatsapp']),
+      email: clean(json['email']),
+    );
+  }
+
+  bool get isEmpty => phone == null && whatsapp == null && email == null;
 }
 
 /// Seller/agent shown on the listing detail and reel header.
@@ -111,6 +140,10 @@ class FairPrice {
         fairHigh: (json['fair_high'] as num?)?.round(),
         bandHigh: (json['band_high'] as num?)?.round(),
       );
+
+  /// False when there is no verdict at all (a new listing with too few
+  /// comparable homes) — the detail page then hides the fair-price parts.
+  bool get isKnown => !identical(this, FairPrice.unknown) || hasBands;
 
   /// True when the sheet can label the axis with money.
   bool get hasBands =>
@@ -249,6 +282,12 @@ class Property {
   final double? lat;
   final double? lng;
 
+  /// Walkthrough video, when the lister uploaded one.
+  final String? videoUrl;
+
+  /// How buyers reach the lister — the Email / Call / WhatsApp bar.
+  final ListingContact contact;
+
   const Property({
     required this.id,
     required this.title,
@@ -284,6 +323,8 @@ class Property {
     this.unavailableReason,
     this.lat,
     this.lng,
+    this.videoUrl,
+    this.contact = ListingContact.none,
   });
 
   bool get hasLocation => lat != null && lng != null;
@@ -338,6 +379,11 @@ class Property {
       unavailableReason: json['unavailable_reason'] as String?,
       lat: (json['lat'] as num?)?.toDouble(),
       lng: (json['lng'] as num?)?.toDouble(),
+      videoUrl: json['video_url'] as String?,
+      contact: json['contact'] is Map
+          ? ListingContact.fromJson(
+              Map<String, dynamic>.from(json['contact'] as Map))
+          : ListingContact.none,
     );
   }
 

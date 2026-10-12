@@ -1,5 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:video_player/video_player.dart';
+
+import '../data/listing_repository.dart';
 
 import '../models/property.dart';
 import '../state/app_scope.dart';
@@ -18,6 +22,7 @@ import 'gallery_screen.dart';
 import 'map/property_map_screen.dart';
 import 'mortgage_screen.dart';
 import 'share_sheet.dart';
+import 'video_player_screen.dart';
 
 /// Screen 18.
 ///
@@ -32,10 +37,16 @@ class PropertyDetailScreen extends StatefulWidget {
   final String propertyId;
   final Property? preloaded;
 
+  /// The seller's "see it as buyers will" preview from Post a listing:
+  /// renders [preloaded] only — nothing is fetched or recorded, and the
+  /// heart, share and contact buttons are inactive.
+  final bool previewOnly;
+
   const PropertyDetailScreen({
     super.key,
     required this.propertyId,
     this.preloaded,
+    this.previewOnly = false,
   });
 
   @override
@@ -59,9 +70,13 @@ class _PropertyDetailScreenState extends State<PropertyDetailScreen> {
     _similar = AsyncController<List<Property>>(
       () => AppScope.repositoryOf(context).similarTo(widget.propertyId),
     );
+    if (widget.previewOnly) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _property.load();
       _similar.load();
+      // Counts towards the lister's "views" (once per phone per hour).
+      AppScope.repositoryOf(context)
+          .recordListingEvent(widget.propertyId, ListingEvent.view);
     });
   }
 
@@ -105,7 +120,9 @@ class _PropertyDetailScreenState extends State<PropertyDetailScreen> {
       body: ListenableBuilder(
         listenable: _property,
         builder: (context, _) {
-          final property = _property.state.valueOrNull ?? widget.preloaded;
+          final property = widget.previewOnly
+              ? widget.preloaded
+              : _property.state.valueOrNull ?? widget.preloaded;
 
           if (property == null) {
             if (_property.state.hasError) {
@@ -137,12 +154,28 @@ class _PropertyDetailScreenState extends State<PropertyDetailScreen> {
           return _buildContent(context, property);
         },
       ),
-      bottomNavigationBar: const _ContactBar(),
+      bottomNavigationBar: ListenableBuilder(
+        listenable: _property,
+        builder: (context, _) {
+          final p = widget.previewOnly
+              ? widget.preloaded
+              : _property.state.valueOrNull ?? widget.preloaded;
+          return _ContactBar(
+            property: p,
+            enabled: !widget.previewOnly,
+          );
+        },
+      ),
     );
   }
 
   Widget _buildContent(BuildContext context, Property p) {
-    final photoCount = p.photos.isEmpty ? 5 : p.photos.length;
+    // Slider order: walkthrough video (if any), then the cover, then the
+    // other photos (the cover is already first in `photos`).
+    final hasVideo = p.videoUrl != null;
+    final photoSlides = p.photos.isEmpty ? 5 : p.photos.length;
+    final photoCount = photoSlides + (hasVideo ? 1 : 0);
+    int photoIndexOf(int slide) => hasVideo ? (slide - 1).clamp(0, 1 << 20) : slide;
 
     return CustomScrollView(
       slivers: [
@@ -156,16 +189,33 @@ class _PropertyDetailScreenState extends State<PropertyDetailScreen> {
                   controller: _gallery,
                   itemCount: photoCount,
                   onPageChanged: (i) => _page.value = i,
-                  itemBuilder: (context, i) => GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    // Tapping the hero opens the full gallery at this photo.
-                    onTap: () => _openGallery(p, initialIndex: i),
-                    child: PropertyImage(
-                      seed: p.gradientSeed + i,
-                      url: i < p.photos.length ? p.photos[i] : null,
-                      decodeWidth: MediaQuery.sizeOf(context).width,
-                    ),
-                  ),
+                  itemBuilder: (context, slide) {
+                    if (hasVideo && slide == 0) {
+                      return _VideoSlide(
+                        url: p.videoUrl!,
+                        posterUrl: p.photos.isEmpty ? null : p.photos.first,
+                        posterSeed: p.gradientSeed,
+                        page: _page,
+                        onFullscreen: () => Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => VideoPlayerScreen(
+                                url: p.videoUrl!, title: p.title),
+                          ),
+                        ),
+                      );
+                    }
+                    final i = photoIndexOf(slide);
+                    return GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      // Tapping the hero opens the full gallery at this photo.
+                      onTap: () => _openGallery(p, initialIndex: i),
+                      child: PropertyImage(
+                        seed: p.gradientSeed + i,
+                        url: i < p.photos.length ? p.photos[i] : null,
+                        decodeWidth: MediaQuery.sizeOf(context).width,
+                      ),
+                    );
+                  },
                 ),
                 Positioned(
                   left: 0,
@@ -183,34 +233,17 @@ class _PropertyDetailScreenState extends State<PropertyDetailScreen> {
                             onTap: () => Navigator.of(context).maybePop(),
                           ),
                           const Spacer(),
-                          SaveHeartButton(listingId: p.id, size: 36),
-                          const SizedBox(width: 10),
-                          _GalleryIconBtn(
-                            icon: Icons.ios_share_rounded,
-                            onTap: () => _openShare(p),
-                          ),
+                          if (!widget.previewOnly) ...[
+                            SaveHeartButton(listingId: p.id, size: 36),
+                            const SizedBox(width: 10),
+                            _GalleryIconBtn(
+                              icon: Icons.ios_share_rounded,
+                              onTap: () => _openShare(p),
+                            ),
+                          ],
                         ],
                       ),
                     ),
-                  ),
-                ),
-                Positioned(
-                  left: 14,
-                  bottom: 16,
-                  child: Row(
-                    children: [
-                      _GalleryTag(
-                        iconAsset: AppIcons.tour360,
-                        label: '360° Tour',
-                        onTap: () => _openGallery(p),
-                      ),
-                      const SizedBox(width: 8),
-                      _GalleryTag(
-                        icon: Icons.play_circle_fill_rounded,
-                        label: 'Video',
-                        onTap: () => _openGallery(p),
-                      ),
-                    ],
                   ),
                 ),
                 Positioned(
@@ -218,7 +251,8 @@ class _PropertyDetailScreenState extends State<PropertyDetailScreen> {
                   bottom: 16,
                   child: GestureDetector(
                     behavior: HitTestBehavior.opaque,
-                    onTap: () => _openGallery(p, initialIndex: _page.value),
+                    onTap: () => _openGallery(p,
+                        initialIndex: photoIndexOf(_page.value)),
                     child: ValueListenableBuilder<int>(
                       valueListenable: _page,
                       builder: (context, page, _) => Container(
@@ -293,8 +327,13 @@ class _PropertyDetailScreenState extends State<PropertyDetailScreen> {
                     const SizedBox(width: 4),
                     Expanded(
                       child: Text(
-                        '${p.rating} · ${p.reviews} reviews · '
-                        '${p.area}, ${p.city}',
+                        [
+                          if (p.reviews > 0)
+                            '${p.rating} · ${p.reviews} reviews'
+                          else
+                            'New listing',
+                          [p.area, p.city].where((x) => x.isNotEmpty).join(', '),
+                        ].where((x) => x.isNotEmpty).join(' · '),
                         style: AppTextStyles.caption(color: AppColors.ink),
                       ),
                     ),
@@ -388,6 +427,7 @@ class _PropertyDetailScreenState extends State<PropertyDetailScreen> {
                     ],
                   ),
                 ],
+                if (p.fairPrice.isKnown) ...[
                 const SizedBox(height: 26),
                 Text('Home8 Fair Price', style: AppTextStyles.h1()),
                 const SizedBox(height: 14),
@@ -464,6 +504,7 @@ class _PropertyDetailScreenState extends State<PropertyDetailScreen> {
                     ),
                   ),
                 ),
+                ],
                 // Sale listings get the mortgage calculator; rentals don't.
                 if (p.purpose == Purpose.sale) ...[
                   const SizedBox(height: 12),
@@ -504,6 +545,7 @@ class _PropertyDetailScreenState extends State<PropertyDetailScreen> {
                   const SizedBox(height: 12),
                   _LocationPreview(property: p),
                 ],
+                if (!widget.previewOnly) ...[
                 const SizedBox(height: 26),
                 Text('Similar homes nearby', style: AppTextStyles.h1()),
                 const SizedBox(height: 12),
@@ -545,6 +587,7 @@ class _PropertyDetailScreenState extends State<PropertyDetailScreen> {
                     ),
                   ),
                 ),
+                ],
               ],
             ),
           ),
@@ -626,6 +669,7 @@ class _PriceBlock extends StatelessWidget {
                   ],
                 ),
               ),
+              if (p.fairPrice.isKnown) ...[
               const SizedBox(height: 8),
               Pressable(
                 onTap: onFairPriceTap,
@@ -647,6 +691,7 @@ class _PriceBlock extends StatelessWidget {
                   ),
                 ),
               ),
+              ],
             ],
           ),
         ],
@@ -1087,8 +1132,58 @@ class _MapBtn extends StatelessWidget {
   }
 }
 
+/// Email · Call · WhatsApp — the lister's details for this listing.
+/// Taps open the phone's mail app, dialler or WhatsApp, and count as an
+/// enquiry on the lister's dashboard.
 class _ContactBar extends StatelessWidget {
-  const _ContactBar();
+  final Property? property;
+  final bool enabled;
+
+  const _ContactBar({required this.property, required this.enabled});
+
+  Future<void> _open(BuildContext context, ListingEvent kind) async {
+    final p = property;
+    if (p == null || !enabled) return;
+    final c = p.contact;
+    final Uri? uri = switch (kind) {
+      ListingEvent.email => c.email == null
+          ? null
+          : Uri(
+              scheme: 'mailto',
+              path: c.email,
+              query: 'subject=${Uri.encodeComponent('Home8: ${p.title}')}',
+            ),
+      ListingEvent.call =>
+        c.phone == null ? null : Uri(scheme: 'tel', path: c.phone),
+      ListingEvent.whatsapp => (c.whatsapp ?? c.phone) == null
+          ? null
+          : Uri.parse('https://wa.me/'
+              '${(c.whatsapp ?? c.phone)!.replaceAll(RegExp(r'[^0-9]'), '')}'
+              '?text=${Uri.encodeComponent('Hi, I saw "${p.title}" on Home8. Is it still available?')}'),
+      ListingEvent.view => null,
+    };
+    if (uri == null) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(const SnackBar(
+          content: Text("The lister hasn't shared this contact option."),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: AppColors.navDark,
+        ));
+      return;
+    }
+    AppScope.repositoryOf(context).recordListingEvent(p.id, kind);
+    final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!ok && context.mounted) {
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(const SnackBar(
+          content: Text("Couldn't open an app for that on this phone."),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: AppColors.navDark,
+        ));
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1097,21 +1192,23 @@ class _ContactBar extends StatelessWidget {
         padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
         child: Row(
           children: [
-            const Expanded(
+            Expanded(
               child: _ContactButton(
                 iconAsset: AppIcons.contactEmail,
                 label: 'Email',
                 bg: AppColors.primaryTint,
                 fg: AppColors.primary,
+                onTap: () => _open(context, ListingEvent.email),
               ),
             ),
             const SizedBox(width: 10),
-            const Expanded(
+            Expanded(
               child: _ContactButton(
                 iconAsset: AppIcons.contactCall,
                 label: 'Call',
                 bg: AppColors.navDark,
                 fg: Colors.white,
+                onTap: () => _open(context, ListingEvent.call),
               ),
             ),
             const SizedBox(width: 10),
@@ -1121,6 +1218,7 @@ class _ContactBar extends StatelessWidget {
                 label: 'Whatsapp',
                 bg: const Color(0xFF25D366),
                 fg: Colors.white,
+                onTap: () => _open(context, ListingEvent.whatsapp),
               ),
             ),
           ],
@@ -1135,18 +1233,20 @@ class _ContactButton extends StatelessWidget {
   final String label;
   final Color bg;
   final Color fg;
+  final VoidCallback onTap;
 
   const _ContactButton({
     required this.iconAsset,
     required this.label,
     required this.bg,
     required this.fg,
+    required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
     return Pressable(
-      onTap: () {},
+      onTap: onTap,
       child: Container(
         height: 52,
         decoration: BoxDecoration(
@@ -1174,6 +1274,191 @@ class _ContactButton extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// First slide of the gallery when the listing has a video: shows the cover
+/// until tapped, then plays inline (tap to pause). ⛶ opens full screen.
+/// Pauses itself when swiped away.
+class _VideoSlide extends StatefulWidget {
+  final String url;
+  final String? posterUrl;
+  final int posterSeed;
+  final ValueNotifier<int> page;
+  final VoidCallback onFullscreen;
+
+  const _VideoSlide({
+    required this.url,
+    required this.posterUrl,
+    required this.posterSeed,
+    required this.page,
+    required this.onFullscreen,
+  });
+
+  @override
+  State<_VideoSlide> createState() => _VideoSlideState();
+}
+
+class _VideoSlideState extends State<_VideoSlide> {
+  VideoPlayerController? _video;
+  bool _started = false;
+  bool _failed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.page.addListener(_onPage);
+  }
+
+  void _onPage() {
+    if (widget.page.value != 0) _video?.pause();
+  }
+
+  @override
+  void dispose() {
+    widget.page.removeListener(_onPage);
+    _video?.removeListener(_tick);
+    _video?.dispose();
+    super.dispose();
+  }
+
+  void _tick() {
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _toggle() async {
+    if (_failed) return;
+    final existing = _video;
+    if (existing == null) {
+      // Platform view: renders reliably on devices/emulators where the
+      // texture path shows a black picture with sound (Impeller).
+      final c = VideoPlayerController.networkUrl(
+        Uri.parse(widget.url),
+        viewType: VideoViewType.platformView,
+      );
+      setState(() {
+        _video = c;
+        _started = true;
+      });
+      c.addListener(_tick);
+      try {
+        await c.initialize();
+        await c.setLooping(true);
+        if (mounted && widget.page.value == 0) await c.play();
+      } catch (_) {
+        if (mounted) setState(() => _failed = true);
+      }
+      return;
+    }
+    existing.value.isPlaying ? existing.pause() : existing.play();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final v = _video?.value;
+    final ready = v?.isInitialized ?? false;
+    final playing = v?.isPlaying ?? false;
+
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        Container(color: Colors.black),
+        if (ready)
+          Center(
+            child: AspectRatio(
+              aspectRatio: v!.aspectRatio,
+              child: VideoPlayer(_video!),
+            ),
+          )
+        else
+          PropertyImage(
+            seed: widget.posterSeed,
+            url: widget.posterUrl,
+            decodeWidth: MediaQuery.sizeOf(context).width,
+          ),
+        // Tap layer above the native view.
+        Positioned.fill(
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: _toggle,
+          ),
+        ),
+        if (!playing)
+          IgnorePointer(
+            child: Center(
+              child: _failed
+                  ? Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 14, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.55),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: Text("Couldn't play this video",
+                          style: AppTextStyles.caption(color: Colors.white)),
+                    )
+                  : _started && !ready
+                      ? const CircularProgressIndicator(
+                          valueColor:
+                              AlwaysStoppedAnimation<Color>(Colors.white))
+                      : Container(
+                          width: 68,
+                          height: 68,
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.45),
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(Icons.play_arrow_rounded,
+                              color: Colors.white, size: 42),
+                        ),
+            ),
+          ),
+        Positioned(
+          left: 14,
+          bottom: 16,
+          child: IgnorePointer(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.45),
+                borderRadius: BorderRadius.circular(999),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.videocam_rounded,
+                      color: Colors.white, size: 14),
+                  const SizedBox(width: 5),
+                  Text('Video',
+                      style: AppTextStyles.micro(color: Colors.white)),
+                ],
+              ),
+            ),
+          ),
+        ),
+        Positioned(
+          right: 14,
+          bottom: 48,
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () {
+              _video?.pause();
+              widget.onFullscreen();
+            },
+            child: Container(
+              width: 36,
+              height: 36,
+              decoration: BoxDecoration(
+                color: Colors.black.withValues(alpha: 0.45),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.fullscreen_rounded,
+                  color: Colors.white, size: 22),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

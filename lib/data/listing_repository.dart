@@ -1,4 +1,7 @@
+import 'dart:typed_data';
+
 import '../models/lister_profile.dart';
+import '../models/uploaded_doc.dart';
 import '../models/listing_draft.dart';
 import '../models/my_listing.dart';
 import '../models/property.dart';
@@ -34,6 +37,24 @@ import '../models/search_query.dart';
 ///   deleteListing()       -> DELETE /listings/{id}
 ///   boostListing()        -> POST   /listings/{id}/boost
 ///   submitVerification()  -> POST   /me/verification
+/// Where an uploaded file goes. Public media vs private documents.
+enum ListingFileKind {
+  /// Listing photos — public URLs, shown to buyers.
+  photo('listing-photos'),
+
+  /// Walkthrough videos — public URLs.
+  video('listing-videos'),
+
+  /// Title deeds, ID photos, selfies, licences — private, owner-only.
+  privateDoc('listing-private');
+
+  final String bucket;
+  const ListingFileKind(this.bucket);
+}
+
+/// What a buyer did on a listing — feeds the seller's numbers.
+enum ListingEvent { view, call, whatsapp, email }
+
 abstract class ListingRepository {
   Future<ListingPage> search(SearchQuery query);
 
@@ -113,7 +134,24 @@ abstract class ListingRepository {
   /// Sends a completed draft for review. Returns the resulting listing, which
   /// comes back as [ListingStatus.inReview] — never live immediately, because
   /// permit and photo checks happen server-side.
-  Future<MyListing> submitListing(ListingDraft draft);
+  Future<MyListing> submitListing(ListingDraft draft, {ListerSummary? lister});
+
+  /// Uploads one file to the signed-in user's folder. Returns where it went
+  /// ([UploadedDoc.storagePath], plus [UploadedDoc.remoteUrl] for public
+  /// kinds).
+  Future<UploadedDoc> uploadListingFile({
+    required ListingFileKind kind,
+    required Uint8List bytes,
+    required String fileName,
+    String? contentType,
+  });
+
+  /// Removes uploaded files (e.g. a photo removed before it was ever saved).
+  /// Best effort — never throws.
+  Future<void> deleteListingFiles(ListingFileKind kind, List<String> paths);
+
+  /// Records a view or a contact tap. Best effort — never throws.
+  Future<void> recordListingEvent(String listingId, ListingEvent event);
 
   /// Used by the row menu: mark rented, mark sold, pause, republish.
   Future<MyListing> updateListingStatus(String id, ListingStatus status);
@@ -127,4 +165,9 @@ abstract class ListingRepository {
   /// Sends company/licence documents for review (screen 29). Returns the
   /// profile with its status advanced to [VerificationStatus.pending].
   Future<ListerProfile> submitVerification(ListerProfile profile);
+
+  /// Where the signed-in account's verification stands, from the server —
+  /// type, status (pending / verified / rejected) and the review note. Null
+  /// when the account has never submitted one.
+  Future<ListerProfile?> myVerification();
 }

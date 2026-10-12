@@ -22,6 +22,9 @@ class ListingsController extends ChangeNotifier {
   SearchQuery _query;
   AsyncValue<List<Property>> _state = const AsyncValue.loading();
   int _total = 0;
+  int _otherTotal = 0;
+  Purpose? _switchedFrom;
+  String? _autoSwitchedTerm;
   bool _hasMore = false;
   bool _loadingMore = false;
   int _requestId = 0;
@@ -31,6 +34,14 @@ class ListingsController extends ChangeNotifier {
   SearchQuery get query => _query;
   AsyncValue<List<Property>> get state => _state;
   int get total => _total;
+
+  /// Matches under the other purpose (rent ↔ sale) for the same search.
+  int get otherTotal => _otherTotal;
+
+  /// Set when a text search found nothing for the chosen purpose and we
+  /// switched to the other one automatically ("No homes for rent — showing
+  /// homes for sale"). Cleared by the user's next change.
+  Purpose? get switchedFrom => _switchedFrom;
   bool get hasMore => _hasMore;
   bool get loadingMore => _loadingMore;
 
@@ -47,7 +58,23 @@ class ListingsController extends ChangeNotifier {
     try {
       final page = await _repository.search(_query.copyWith(page: 1));
       if (_disposed || id != _requestId) return;
+      // Nothing for this purpose, but the same words match the other one:
+      // switch rather than show "No results".
+      if (page.total == 0 &&
+          page.otherTotal > 0 &&
+          _query.term.trim().isNotEmpty &&
+          _query.term != _autoSwitchedTerm) {
+        // Once per search term, so picking Rent again by hand sticks.
+        _autoSwitchedTerm = _query.term;
+        _switchedFrom = _query.purpose;
+        _query = _query.copyWith(
+          purpose: _query.purpose == Purpose.rent ? Purpose.sale : Purpose.rent,
+          page: 1,
+        );
+        return load();
+      }
       _total = page.total;
+      _otherTotal = page.otherTotal;
       _hasMore = page.hasMore;
       _state = AsyncValue.data(page.results);
     } catch (e, s) {
@@ -85,6 +112,7 @@ class ListingsController extends ChangeNotifier {
   /// Replaces the query and reloads. Page always resets to 1.
   void applyQuery(SearchQuery next) {
     if (next == _query) return;
+    _switchedFrom = null;
     _query = next.copyWith(page: 1);
     load();
   }

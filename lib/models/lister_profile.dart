@@ -37,16 +37,31 @@ enum ListerType {
   /// Individuals still verify — but per *listing*, at the permit step, because
   /// a title deed belongs to a property rather than to a person. Company
   /// verification is per *account*, which is why it happens once at sign-up.
-  bool get needsAccountVerification => this != ListerType.individual;
+  ///
+  /// Everyone verifies now: only approved individuals, agents and companies
+  /// can publish listings.
+  bool get needsAccountVerification => true;
 
-  /// Screen 29's title. An agent verifies themselves, a company verifies the
-  /// business, and calling both "your Company" reads wrong to a solo broker.
-  String get verifyTitle =>
-      this == ListerType.company ? 'Verify your Company' : 'Verify your Licence';
+  /// Verification screen title (prototype 63 / 64 / 65).
+  String get verifyTitle => switch (this) {
+        ListerType.individual => 'Individual Verification',
+        ListerType.agent => 'Agent Verification',
+        ListerType.company => 'Verify your Company',
+      };
 
-  /// Label above the first field on screen 29.
+  /// Line under the title.
+  String get verifySubtitle => switch (this) {
+        ListerType.individual =>
+          'Required to earn the Verified-Seller badge and post unlimited listings.',
+        ListerType.agent =>
+          'Required to earn the Verified-Agent badge and post unlimited listings.',
+        ListerType.company =>
+          'Required to earn the Verified-Company badge and post unlimited listings.',
+      };
+
+  /// Label above the company field (agents and companies).
   String get organisationLabel =>
-      this == ListerType.company ? 'Company name' : 'Agency you work with';
+      this == ListerType.company ? 'Company name' : 'Associated Company';
 
   static ListerType? parse(String? value) {
     for (final t in ListerType.values) {
@@ -103,6 +118,17 @@ class ListerProfile {
   final UploadedDoc? brokerCard;
   final VerificationStatus status;
 
+  /// Individuals: name as on the ID, and both sides of the card.
+  final String legalName;
+  final UploadedDoc? idFront;
+  final UploadedDoc? idBack;
+
+  /// Why the last request was rejected. Empty otherwise.
+  final String reviewNote;
+
+  /// When the current request was sent (from the server).
+  final DateTime? submittedAt;
+
   /// Trust score shown on the profile header ("TRUST 92"). Computed server-side
   /// from verification, response time and listing quality — the app only
   /// displays it. Null until the backend returns one.
@@ -116,6 +142,11 @@ class ListerProfile {
     this.brokerCard,
     this.status = VerificationStatus.none,
     this.trustScore,
+    this.legalName = '',
+    this.idFront,
+    this.idBack,
+    this.reviewNote = '',
+    this.submittedAt,
   });
 
   ListerProfile copyWith({
@@ -126,6 +157,11 @@ class ListerProfile {
     UploadedDoc? brokerCard,
     VerificationStatus? status,
     int? trustScore,
+    String? legalName,
+    UploadedDoc? idFront,
+    UploadedDoc? idBack,
+    String? reviewNote,
+    DateTime? submittedAt,
     bool clearTradeLicence = false,
     bool clearBrokerCard = false,
   }) =>
@@ -138,26 +174,32 @@ class ListerProfile {
         brokerCard: clearBrokerCard ? null : (brokerCard ?? this.brokerCard),
         status: status ?? this.status,
         trustScore: trustScore ?? this.trustScore,
+        legalName: legalName ?? this.legalName,
+        idFront: idFront ?? this.idFront,
+        idBack: idBack ?? this.idBack,
+        reviewNote: reviewNote ?? this.reviewNote,
+        submittedAt: submittedAt ?? this.submittedAt,
       );
 
   /// Screen 29's CTA only enables when there's something to review.
-  bool get canSubmit =>
-      organisation.trim().isNotEmpty &&
-      licenceNumber.trim().isNotEmpty &&
-      tradeLicence != null;
+  bool get canSubmit => type == ListerType.individual
+      ? legalName.trim().isNotEmpty && idFront != null && idBack != null
+      : organisation.trim().isNotEmpty &&
+          licenceNumber.trim().isNotEmpty &&
+          tradeLicence != null;
 
   /// Drives the "Verified-Agent" badge on listing cards and the profile header.
   bool get isVerified => status == VerificationStatus.verified;
 
   /// True while listings must stay in draft — see the amber note on screen 29.
-  bool get listingsBlocked =>
-      type.needsAccountVerification && status != VerificationStatus.verified;
+  bool get listingsBlocked => status != VerificationStatus.verified;
 
   Map<String, dynamic> toJson() => {
         'type': type.name,
         'organisation': organisation,
         'licence_number': licenceNumber,
         'status': status.name,
+        if (legalName.isNotEmpty) 'legal_name': legalName,
         if (trustScore != null) 'trust_score': trustScore,
         if (tradeLicence != null) 'trade_licence': tradeLicence!.toJson(),
         if (brokerCard != null) 'broker_card': brokerCard!.toJson(),
@@ -169,6 +211,7 @@ class ListerProfile {
         organisation: json['organisation'] as String? ?? '',
         licenceNumber: json['licence_number'] as String? ?? '',
         status: VerificationStatus.parse(json['status'] as String?),
+        legalName: json['legal_name'] as String? ?? '',
         trustScore: json['trust_score'] as int?,
         tradeLicence: json['trade_licence'] == null
             ? null

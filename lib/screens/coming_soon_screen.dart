@@ -1,12 +1,10 @@
 import 'package:flutter/material.dart';
 
-import '../state/app_scope.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text_styles.dart';
 import '../widgets/sign_in_prompt.dart';
 import '../widgets/state_views.dart';
-import 'lister/create_profile_screen.dart';
-import 'post_listing/post_listing_flow.dart';
+import 'lister/lister_gate.dart';
 
 /// Placeholder for flows that exist in the product but not yet in the app.
 ///
@@ -62,37 +60,8 @@ void openPostListingFlow(BuildContext context) {
   );
 }
 
-/// ## Why there can be a screen before the stepper
-///
-/// The permit step needs to know whether this is an owner posting their own
-/// home or an agency posting a client's — the required document differs, and so
-/// does the badge. So a signed-in user who has never listed passes through
-/// screen 28 once, and only once; after that `listerProfile` exists and `+`
-/// goes straight to the form.
-///
-/// `onDone` is what keeps this from being a detour: screen 28 (and screen 29
-/// behind it, for agencies) hands control back here rather than dropping the
-/// user on a profile screen, so the `+` they pressed still ends in the form
-/// they wanted.
+/// Signed in → `startListing` checks verification (only approved
+/// individuals, agents and companies can publish) and routes accordingly.
 void _openPostFlow(BuildContext context) {
-  final user = AppScope.authOf(context).user;
-
-  if (user != null && user.listerProfile == null) {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => CreateProfileScreen(
-          onDone: () => _pushFlow(context),
-        ),
-      ),
-    );
-    return;
-  }
-
-  _pushFlow(context);
-}
-
-void _pushFlow(BuildContext context) {
-  Navigator.of(context).push(
-    MaterialPageRoute(builder: (_) => const PostListingFlow()),
-  );
+  startListing(context);
 }

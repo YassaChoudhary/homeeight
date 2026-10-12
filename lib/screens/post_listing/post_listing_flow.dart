@@ -11,31 +11,32 @@ import '../../widgets/pill_button.dart';
 import 'listing_preview_screen.dart';
 import 'step_basics.dart';
 import 'step_details.dart';
+import 'step_location_screen.dart';
 import 'step_media.dart';
 import 'step_permit.dart';
+import 'step_reels.dart';
 
-/// Screens 33–37 — the guided "Post a listing" stepper.
+/// "Post a listing" — the six-step flow from the prototype:
 ///
-/// ## One route, four steps
+///   1 Basics → 2 Details & price → 3 Photos → 4 Location → 5 Verify →
+///   6 Reels package → Preview → Submitted.
 ///
-/// The steps are not separate routes. The header, progress bar and footer CTA
-/// are identical across all four, and pushing a route per step would rebuild
-/// them each time and put four entries on the back stack for what the user
-/// experiences as one screen. The host owns the chrome; each step contributes
-/// only its fields.
-///
-/// The location screen (36) *is* a pushed route, because it's reached from the
-/// Map link on Basics and returns a value. Same for Preview (38).
-///
-/// ## Closing
-///
-/// `X` never discards silently. If anything has been entered, it offers to keep
-/// the draft — which is the whole point of the Draft tab on My Listings.
+/// One route for all six steps: the header, progress bar and footer stay put
+/// and only the body changes. Everything is saved in Supabase: "Save" stores a
+/// draft, "Publish listing" (on Preview) sends it for review.
 class PostListingFlow extends StatefulWidget {
-  /// Set when reopening an existing draft from "Continue editing".
+  /// Set when reopening a listing from My Listings ("Continue editing").
   final ListingDraft? initialDraft;
 
-  const PostListingFlow({super.key, this.initialDraft});
+  /// The account is waiting for verification: everything works and drafts
+  /// save, but Publish is locked until you approve the account.
+  final bool accountPending;
+
+  const PostListingFlow({
+    super.key,
+    this.initialDraft,
+    this.accountPending = false,
+  });
 
   @override
   State<PostListingFlow> createState() => _PostListingFlowState();
@@ -43,30 +44,73 @@ class PostListingFlow extends StatefulWidget {
 
 class _PostListingFlowState extends State<PostListingFlow> {
   late final PostListingController _controller;
+  final ScrollController _scroll = ScrollController();
+
+  /// Reels card currently highlighted (Unlimited is pre-selected, as designed).
+  late ReelsPackage _reelsChoice;
 
   @override
   void initState() {
     super.initState();
     final scope = AppScope.of(context);
     final appState = scope.appState;
+    final user = scope.auth.user;
+    final profile = user?.listerProfile;
 
-    // Seeded from the user's chosen market rather than hardcoded, so someone
-    // browsing Pakistan doesn't have to change the country and currency on
-    // every listing they post.
     final seed = widget.initialDraft ??
         ListingDraft(
           countryCode: appState.market.code,
           city: appState.marketCity,
           currency: appState.currency,
+          contactEmail: user?.email ?? '',
+          contactPhone: user?.phone ?? '',
+          contactWhatsapp: user?.phone ?? '',
         );
 
-    _controller = PostListingController(scope.repository, initial: seed);
+    _reelsChoice = seed.reelsPackage ?? ReelsPackage.unlimited30d;
+
+    _controller = PostListingController(
+      scope.repository,
+      initial: seed,
+      accountPending: widget.accountPending,
+      lister: user == null
+          ? null
+          : ListerSummary(
+              name: user.name,
+              agency: profile?.organisation ?? '',
+              avatarUrl: user.avatarUrl,
+              type: profile?.type.name ?? 'individual',
+            ),
+    );
+    _controller.addListener(_onStep);
+  }
+
+  PostStep? _lastStep;
+
+  /// New step → back to the top of the page.
+  void _onStep() {
+    if (_lastStep != _controller.step) {
+      _lastStep = _controller.step;
+      if (_scroll.hasClients) _scroll.jumpTo(0);
+    }
   }
 
   @override
   void dispose() {
+    _controller.removeListener(_onStep);
     _controller.dispose();
+    _scroll.dispose();
     super.dispose();
+  }
+
+  void _tell(String message) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(
+        content: Text(message),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: AppColors.navDark,
+      ));
   }
 
   Future<void> _close() async {
@@ -109,22 +153,31 @@ class _PostListingFlowState extends State<PostListingFlow> {
     );
 
     if (choice == null || !mounted) return;
-    if (choice == 'save') await _controller.saveDraft();
+    if (choice == 'save') {
+      if (_controller.anyUploading) {
+        _tell('Wait for the uploads to finish, then save.');
+        return;
+      }
+      final ok = await _controller.saveDraft();
+      if (!mounted) return;
+      if (!ok) {
+        _tell("Couldn't save — ${_controller.errorMessage}");
+        return;
+      }
+    } else {
+      _controller.discardUploads();
+    }
     if (mounted) Navigator.of(context).pop();
   }
 
   Future<void> _save() async {
+    if (_controller.anyUploading) {
+      _tell('Wait for the uploads to finish, then save.');
+      return;
+    }
     final ok = await _controller.saveDraft();
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(
-        SnackBar(
-          content: Text(ok ? 'Draft saved' : "Couldn't save — try again"),
-          behavior: SnackBarBehavior.floating,
-          backgroundColor: AppColors.navDark,
-        ),
-      );
+    _tell(ok ? 'Draft saved' : "Couldn't save — ${_controller.errorMessage}");
   }
 
   void _back() {
@@ -132,30 +185,84 @@ class _PostListingFlowState extends State<PostListingFlow> {
   }
 
   Future<void> _advance() async {
-    // At the end of the numbered steps, the next thing is the preview — which
-    // is a route rather than a step because it's also reachable from My
-    // Listings later.
+    // Tapped before the step is complete: say exactly what's missing.
+    if (!_controller.canAdvance) {
+      final missing = _controller.draft.missingFor(_controller.step);
+      _tell(_controller.anyUploading
+          ? 'Wait for the uploads to finish.'
+          : missing.isEmpty
+              ? 'Complete this step to continue.'
+              : 'Still needed: ${missing.join(', ')}');
+      return;
+    }
     if (_controller.next()) return;
+    await _openPreview();
+  }
 
-    final result = await Navigator.of(context).push<MyListing>(
+  Future<void> _openPreview() async {
+    await Navigator.of(context).push<MyListing>(
       MaterialPageRoute(
         builder: (_) => ListingPreviewScreen(controller: _controller),
       ),
     );
-
-    // The preview screen pops with the published listing on success; that
-    // means the flow itself is done and should get out of the way.
-    if (result != null && mounted) Navigator.of(context).pop(result);
   }
 
-  /// Named for what happens next rather than "Next", which is what the design
-  /// shows and what stops a four-step form feeling open-ended.
+  /// "Purchase the Package". Payments aren't connected yet: the choice is
+  /// saved on the listing and the team activates it.
+  Future<void> _purchaseReels() async {
+    _controller.edit((d) => d.copyWith(reelsPackage: _reelsChoice));
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(AppRadius.md),
+        ),
+        title: Text('${_reelsChoice.title} — AED ${_reelsChoice.priceAed}',
+            style: AppTextStyles.h2()),
+        content: Text(
+          "Online payment isn't available yet. We've added this package to "
+          "your listing and our team will contact you to complete the "
+          'payment and switch it on.',
+          style: AppTextStyles.body(color: AppColors.inkMuted),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: Text('Continue',
+                style: AppTextStyles.bodyStrong(color: AppColors.primary)),
+          ),
+        ],
+      ),
+    );
+    if (mounted) await _openPreview();
+  }
+
+  Future<void> _skipReels() async {
+    _controller.edit((d) => d.copyWith(clearReelsPackage: true));
+    await _openPreview();
+  }
+
   String get _ctaLabel => switch (_controller.step) {
         PostStep.basics => 'Next — Details',
-        PostStep.location => 'Next — Details',
         PostStep.details => 'Next — Photos',
-        PostStep.media => 'Next — Verification',
-        PostStep.permit => 'Next — Preview',
+        PostStep.media => 'Next — Location',
+        PostStep.location => 'Next — Verify',
+        PostStep.permit => 'Submit for review',
+        PostStep.reels => 'Purchase the Package',
+      };
+
+  Widget _body(PostStep step) => switch (step) {
+        PostStep.basics => StepBasics(controller: _controller),
+        PostStep.details => StepDetails(controller: _controller),
+        PostStep.media => StepMedia(controller: _controller),
+        PostStep.location => StepLocation(controller: _controller),
+        PostStep.permit => StepPermit(controller: _controller),
+        PostStep.reels => StepReels(
+            controller: _controller,
+            selected: _reelsChoice,
+            onSelect: (p) => setState(() => _reelsChoice = p),
+          ),
       };
 
   @override
@@ -172,17 +279,23 @@ class _PostListingFlowState extends State<PostListingFlow> {
             listenable: _controller,
             builder: (context, _) {
               final step = _controller.step;
+              final uploading = _controller.anyUploading;
               return Column(
                 children: [
                   _FlowHeader(
                     step: step,
                     saving: _controller.saving,
+                    // No "Save" on the last two steps, as designed.
+                    showSave: step != PostStep.permit && step != PostStep.reels,
                     onBack: _back,
                     onClose: _close,
                     onSave: _save,
                   ),
                   Expanded(
                     child: ListView(
+                      controller: _scroll,
+                      keyboardDismissBehavior:
+                          ScrollViewKeyboardDismissBehavior.onDrag,
                       padding: const EdgeInsets.fromLTRB(
                         AppSpacing.screenPadding,
                         18,
@@ -193,36 +306,57 @@ class _PostListingFlowState extends State<PostListingFlow> {
                         Text(
                           'STEP ${step.number} OF ${PostStep.numbered.length}',
                           style: AppTextStyles.micro(color: AppColors.primary)
-                              .copyWith(
-                                  fontSize: 12.5, letterSpacing: 0.8),
+                              .copyWith(fontSize: 12.5, letterSpacing: 1.2),
                         ),
                         const SizedBox(height: 6),
                         Text(step.title,
                             style:
                                 AppTextStyles.display().copyWith(fontSize: 27)),
                         const SizedBox(height: 20),
-                        switch (step) {
-                          PostStep.basics ||
-                          PostStep.location =>
-                            StepBasics(controller: _controller),
-                          PostStep.details =>
-                            StepDetails(controller: _controller),
-                          PostStep.media => StepMedia(controller: _controller),
-                          PostStep.permit =>
-                            StepPermit(controller: _controller),
-                        },
+                        _body(step),
                       ],
                     ),
                   ),
                   Padding(
                     padding: const EdgeInsets.fromLTRB(
                         AppSpacing.screenPadding, 6, AppSpacing.screenPadding, 12),
-                    child: PrimaryButton(
-                      label: _ctaLabel,
-                      // Disabled rather than hidden, so the CTA doesn't jump
-                      // around as fields are filled in.
-                      onTap: _controller.canAdvance ? _advance : null,
-                    ),
+                    child: step == PostStep.reels
+                        ? Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              PrimaryButton(
+                                label: _ctaLabel,
+                                color: AppColors.amber,
+                                onTap: _purchaseReels,
+                              ),
+                              const SizedBox(height: 6),
+                              GestureDetector(
+                                behavior: HitTestBehavior.opaque,
+                                onTap: _skipReels,
+                                child: Padding(
+                                  padding:
+                                      const EdgeInsets.symmetric(vertical: 10),
+                                  child: Text(
+                                    'Skip Reels',
+                                    style: AppTextStyles.bodyStrong().copyWith(
+                                      fontSize: 16,
+                                      decoration: TextDecoration.underline,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          )
+                        : Opacity(
+                            // Looks disabled until the step is complete, but
+                            // stays tappable so it can say what's missing.
+                            opacity: _controller.canAdvance ? 1 : 0.45,
+                            child: PrimaryButton(
+                              label: uploading ? 'Uploading…' : _ctaLabel,
+                              glow: _controller.canAdvance,
+                              onTap: _advance,
+                            ),
+                          ),
                   ),
                 ],
               );
@@ -234,10 +368,11 @@ class _PostListingFlowState extends State<PostListingFlow> {
   }
 }
 
-/// Close · title · Save, with the four-segment progress bar under it.
+/// ✕ / ← · "Post a listing" · Save, with the six-segment progress bar.
 class _FlowHeader extends StatelessWidget {
   final PostStep step;
   final bool saving;
+  final bool showSave;
   final VoidCallback onBack;
   final VoidCallback onClose;
   final VoidCallback onSave;
@@ -245,6 +380,7 @@ class _FlowHeader extends StatelessWidget {
   const _FlowHeader({
     required this.step,
     required this.saving,
+    required this.showSave,
     required this.onBack,
     required this.onClose,
     required this.onSave,
@@ -252,7 +388,7 @@ class _FlowHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isFirst = step == PostStep.basics || step == PostStep.location;
+    final isFirst = step == PostStep.basics;
 
     return Column(
       children: [
@@ -260,18 +396,24 @@ class _FlowHeader extends StatelessWidget {
           padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
           child: Row(
             children: [
-              GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                // The first step shows an X because there's nothing behind it
-                // in the flow; later steps show a back arrow. Same slot, so
-                // the title never shifts.
-                onTap: isFirst ? onClose : onBack,
-                child: Padding(
-                  padding: const EdgeInsets.all(10),
-                  child: Icon(
-                    isFirst ? Icons.close_rounded : Icons.arrow_back_rounded,
-                    color: AppColors.ink,
-                    size: 24,
+              // Same width as the Save slot, so the title stays centred.
+              SizedBox(
+                width: 72,
+                child: Align(
+                  alignment: AlignmentDirectional.centerStart,
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: isFirst ? onClose : onBack,
+                    child: Padding(
+                      padding: const EdgeInsets.all(10),
+                      child: Icon(
+                        isFirst
+                            ? Icons.close_rounded
+                            : Icons.arrow_back_rounded,
+                        color: AppColors.ink,
+                        size: 24,
+                      ),
+                    ),
                   ),
                 ),
               ),
@@ -280,33 +422,45 @@ class _FlowHeader extends StatelessWidget {
                     textAlign: TextAlign.center,
                     style: AppTextStyles.h1().copyWith(fontSize: 21)),
               ),
-              GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTap: saving ? null : onSave,
-                child: Padding(
-                  padding: const EdgeInsets.all(10),
-                  child: saving
-                      ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            valueColor: AlwaysStoppedAnimation<Color>(
-                                AppColors.inkMuted),
-                          ),
-                        )
-                      : Text('Save',
-                          style: AppTextStyles.bodyStrong(
-                                  color: AppColors.inkMuted)
-                              .copyWith(fontSize: 16)),
-                ),
+              SizedBox(
+                width: 72,
+                child: !showSave
+                    ? null
+                    : GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: saving ? null : onSave,
+                        child: Padding(
+                          padding: const EdgeInsets.all(10),
+                          child: saving
+                              ? const Align(
+                                  alignment: Alignment.centerRight,
+                                  child: SizedBox(
+                                    width: 18,
+                                    height: 18,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      valueColor: AlwaysStoppedAnimation<Color>(
+                                          AppColors.inkMuted),
+                                    ),
+                                  ),
+                                )
+                              : Text('Save',
+                                  textAlign: TextAlign.right,
+                                  maxLines: 1,
+                                  softWrap: false,
+                                  overflow: TextOverflow.visible,
+                                  style: AppTextStyles.bodyStrong(
+                                          color: AppColors.inkMuted)
+                                      .copyWith(fontSize: 16)),
+                        ),
+                      ),
               ),
             ],
           ),
         ),
         Padding(
-          padding: const EdgeInsets.symmetric(
-              horizontal: AppSpacing.screenPadding),
+          padding:
+              const EdgeInsets.symmetric(horizontal: AppSpacing.screenPadding),
           child: StepProgressBar(current: step),
         ),
       ],
@@ -314,33 +468,29 @@ class _FlowHeader extends StatelessWidget {
   }
 }
 
-/// Four segments; filled ones are teal, the rest are the line token.
-///
-/// Public because the location screen renders it too — it's a sub-screen of
-/// step 1 and has to show the same progress, or it reads as a step the user
-/// has somehow skipped into.
+/// Six segments; filled ones are teal.
 class StepProgressBar extends StatelessWidget {
   final PostStep current;
   const StepProgressBar({super.key, required this.current});
 
   @override
   Widget build(BuildContext context) {
+    final count = PostStep.numbered.length;
     return Row(
       children: [
-        for (var i = 0; i < PostStep.numbered.length; i++) ...[
+        for (var i = 0; i < count; i++) ...[
           Expanded(
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 220),
               curve: Curves.easeOut,
-              height: 4,
+              height: 5,
               decoration: BoxDecoration(
-                color:
-                    i < current.number ? AppColors.primary : AppColors.line,
+                color: i < current.number ? AppColors.primary : AppColors.line,
                 borderRadius: BorderRadius.circular(999),
               ),
             ),
           ),
-          if (i != PostStep.numbered.length - 1) const SizedBox(width: 8),
+          if (i != count - 1) const SizedBox(width: 8),
         ],
       ],
     );

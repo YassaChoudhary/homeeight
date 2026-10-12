@@ -16,6 +16,7 @@ import 'coming_soon_screen.dart';
 import 'edit_profile_screen.dart';
 import 'help_support_screen.dart';
 import 'lister/my_listings_screen.dart';
+import 'lister/verification_center_screen.dart';
 import 'notifications_screen.dart';
 import 'saved_screen.dart';
 import 'settings_screen.dart';
@@ -122,12 +123,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
           // here as well as in initState rather than only at construction.
           if (user.isLister) _startStats();
 
+          final isSeller = user.isLister;
+          final logOut = _LogOutButton(onTap: () => _confirmSignOut(context));
+
           return AppStateBuilder(
-            builder: (context, appState) => ListView(
-              padding: EdgeInsets.only(
-                bottom: HomeNavBar.reservedSpace(context) + 16,
-              ),
-              children: [
+            builder: (context, appState) => CustomScrollView(
+              slivers: [
+                SliverToBoxAdapter(
+                  child: Column(
+                    children: [
                 _ProfileHeader(
                   user: user,
                   city: appState.marketCity,
@@ -168,7 +172,28 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           },
                         ),
                         const SizedBox(height: 14),
+                        _MenuCard(
+                          icon: Icons.verified_user_outlined,
+                          iconTint: AppColors.success,
+                          iconBg: const Color(0xFFE3F4EA),
+                          label: 'Verification center',
+                          trailingText: switch (
+                              user.listerProfile?.status) {
+                            VerificationStatus.verified => 'Approved',
+                            VerificationStatus.pending => 'In review',
+                            VerificationStatus.rejected => 'Needs changes',
+                            _ => 'Not verified',
+                          },
+                          onTap: () => Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => const VerificationCenterScreen(),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 14),
                       ],
+                      // Buyers get the short menu from the buyer design plus
+                      // Saved Items (the only way into saved homes).
                       _MenuCard(
                         iconAsset: AppIcons.heartSolid,
                         iconTint: AppColors.amber,
@@ -247,11 +272,35 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           ),
                         ),
                       ),
-                      const SizedBox(height: 40),
-                      _LogOutButton(onTap: () => _confirmSignOut(context)),
+                      if (isSeller) ...[
+                        const SizedBox(height: 40),
+                        logOut,
+                        SizedBox(
+                            height: HomeNavBar.reservedSpace(context) + 16),
+                      ],
                     ],
                   ),
                 ),
+                    ],
+                  ),
+                ),
+                // Buyer: Log out sits at the bottom of the screen, as designed.
+                if (!isSeller)
+                  SliverFillRemaining(
+                    hasScrollBody: false,
+                    child: Padding(
+                      padding: EdgeInsets.fromLTRB(
+                        AppSpacing.screenPadding,
+                        32,
+                        AppSpacing.screenPadding,
+                        HomeNavBar.reservedSpace(context) + 16,
+                      ),
+                      child: Align(
+                        alignment: Alignment.bottomCenter,
+                        child: logOut,
+                      ),
+                    ),
+                  ),
               ],
             ),
           );
@@ -435,7 +484,7 @@ class _Badge extends StatelessWidget {
   }
 }
 
-/// Saved · Listings · Viewings · Rating.
+/// Saved · Listings.
 class _StatsStrip extends StatelessWidget {
   final ListerStats stats;
 
@@ -451,20 +500,6 @@ class _StatsStrip extends StatelessWidget {
         const SizedBox(width: 10),
         Expanded(
           child: _StatCell(value: '${stats.listings}', label: 'Listings'),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: _StatCell(value: '${stats.viewings}', label: 'Viewings'),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: _StatCell(
-            value: stats.ratingLabel,
-            label: 'Rating',
-            // Amber, matching the star colour used on listing cards, so the
-            // one figure that isn't a count reads as a different kind of thing.
-            valueColor: AppColors.amber,
-          ),
         ),
       ],
     );

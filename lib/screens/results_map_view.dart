@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../models/geo.dart';
@@ -75,6 +77,49 @@ class _ResultsMapViewState extends State<ResultsMapView> {
     if (_selectedId != null && _byId(_selectedId!) == null) {
       _selectedId = null;
     }
+    // A new set of results (e.g. a different search): frame them all —
+    // unless the user is working inside a map area they picked.
+    if (widget.focusId == null &&
+        widget.activeArea == null &&
+        !_sameIds(old.items, widget.items)) {
+      final fit = _fit(_points, MediaQuery.sizeOf(context));
+      if (fit != null) _map.flyTo(fit.$1, zoom: fit.$2, durationMs: 700);
+    }
+  }
+
+  static bool _sameIds(List<Property> a, List<Property> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i].id != b[i].id) return false;
+    }
+    return true;
+  }
+
+  List<GeoPoint> get _points =>
+      widget.items.map((p) => p.mapLocation).whereType<GeoPoint>().toList();
+
+  /// Centre + zoom that shows every point on a screen of [size], with room
+  /// for the chips and the card.
+  static (GeoPoint, double)? _fit(List<GeoPoint> points, Size size) {
+    if (points.isEmpty) return null;
+    if (points.length == 1) return (points.first, 14);
+    var minLat = points.first.lat, maxLat = minLat;
+    var minLng = points.first.lng, maxLng = minLng;
+    for (final p in points) {
+      minLat = math.min(minLat, p.lat);
+      maxLat = math.max(maxLat, p.lat);
+      minLng = math.min(minLng, p.lng);
+      maxLng = math.max(maxLng, p.lng);
+    }
+    final center = GeoPoint((minLat + maxLat) / 2, (minLng + maxLng) / 2);
+    final w = size.width * 0.75;
+    final h = size.height * 0.5;
+    final lngSpan = math.max(maxLng - minLng, 0.004);
+    final latSpan = math.max(maxLat - minLat, 0.004);
+    final cosLat = math.cos(center.lat * math.pi / 180).abs().clamp(0.2, 1.0);
+    final zLng = math.log(360 * (w / 256) / lngSpan) / math.ln2;
+    final zLat = math.log(360 * (h / 256) * cosLat / latSpan) / math.ln2;
+    return (center, math.min(zLng, zLat).clamp(3.0, 15.0).toDouble());
   }
 
   Property? _byId(String id) {
@@ -84,18 +129,21 @@ class _ResultsMapViewState extends State<ResultsMapView> {
     return null;
   }
 
-  GeoPoint get _initialCenter {
+  /// Where the map opens: the focused listing, else the picked area, else
+  /// framing all results, else the market.
+  (GeoPoint, double) _initialCamera(Size size) {
     final focus = widget.focusId == null ? null : _byId(widget.focusId!);
-    return focus?.mapLocation ??
-        widget.activeArea?.center ??
-        widget.items
-            .map((p) => p.mapLocation)
-            .whereType<GeoPoint>()
-            .firstOrNull ??
-        widget.fallbackCenter;
+    final focusLoc = focus?.mapLocation;
+    if (focusLoc != null) return (focusLoc, 14);
+    final area = widget.activeArea;
+    if (area != null) {
+      return _fit([area.southwest, area.northeast], size) ??
+          (area.center, 12);
+    }
+    return _fit(_points, size) ?? (widget.fallbackCenter, 11.5);
   }
 
-  double get _initialZoom => widget.focusId != null ? 14 : 11.5;
+  (GeoPoint, double)? _camera;
 
   List<MapPin> get _pins => [
         for (final p in widget.items)
@@ -122,14 +170,16 @@ class _ResultsMapViewState extends State<ResultsMapView> {
     final selected = _selectedId == null ? null : _byId(_selectedId!);
     final withoutLocation =
         widget.items.where((p) => p.mapLocation == null).length;
+    // Fixed at first build: the map only reads its initial camera once.
+    final camera = _camera ??= _initialCamera(MediaQuery.sizeOf(context));
 
     return Stack(
       children: [
         Positioned.fill(
           child: Home8Map(
             controller: _map,
-            initialCenter: _initialCenter,
-            initialZoom: _initialZoom,
+            initialCenter: camera.$1,
+            initialZoom: camera.$2,
             pins: _pins,
             selectedPinId: _selectedId,
             onPinTap: (id) => setState(() => _selectedId = id),

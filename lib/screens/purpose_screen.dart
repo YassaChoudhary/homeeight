@@ -9,7 +9,7 @@ import '../theme/app_text_styles.dart';
 import '../widgets/app_icons.dart';
 import '../widgets/home_nav_bar.dart';
 import '../widgets/pill_button.dart';
-import 'lister/create_profile_screen.dart';
+import 'lister/verification_required_screen.dart';
 import 'main_shell.dart';
 
 /// Where every sign-in method goes once the account is ready.
@@ -85,7 +85,10 @@ class _PurposeScreenState extends State<PurposeScreen> {
     if (_selected == UserIntent.listProperty) {
       Navigator.of(context).push(
         MaterialPageRoute(
-          builder: (_) => CreateProfileScreen(onDone: _land),
+          // Only verified listers can publish, so the "List a property"
+          // path verifies straight away (prototype 62 → 63/64/65), then
+          // lands in the app.
+          builder: (_) => VerificationRequiredScreen(onDone: _land),
         ),
       );
       return;

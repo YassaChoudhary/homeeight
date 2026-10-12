@@ -10,7 +10,6 @@ import '../../theme/app_spacing.dart';
 import '../../theme/app_text_styles.dart';
 import '../../widgets/form_fields.dart';
 import '../../widgets/pill_button.dart';
-import 'step_location_screen.dart';
 
 /// Screen 33 — "What are you listing?", the fields of step 1.
 ///
@@ -28,15 +27,6 @@ class StepBasics extends StatelessWidget {
 
   const StepBasics({super.key, required this.controller});
 
-  Future<void> _openMap(BuildContext context) async {
-    final result = await Navigator.of(context).push<ListingDraft>(
-      MaterialPageRoute(
-        builder: (_) => StepLocationScreen(draft: controller.draft),
-      ),
-    );
-    if (result != null) controller.edit((_) => result);
-  }
-
   @override
   Widget build(BuildContext context) {
     final draft = controller.draft;
@@ -45,6 +35,16 @@ class StepBasics extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        if (controller.accountPending) ...[
+          const InfoNote(
+            tone: NoteTone.warning,
+            icon: Icons.schedule_rounded,
+            message: 'Your account is being verified. You can prepare this '
+                'listing and save it as a draft — publishing unlocks once '
+                "you're approved.",
+          ),
+          const SizedBox(height: 20),
+        ],
         const FieldLabel('Purpose'),
         const SizedBox(height: 10),
         SegmentedControl<Purpose>(
@@ -106,24 +106,6 @@ class StepBasics extends StatelessWidget {
             );
           },
         ),
-        const SizedBox(height: 22),
-        const FieldLabel('Location'),
-        const SizedBox(height: 10),
-        _LocationRow(
-          address: draft.address,
-          community: draft.community,
-          city: draft.city,
-          onTap: () => _openMap(context),
-        ),
-        const SizedBox(height: 18),
-        // Market-specific, because the document differs: UAE wants a trade
-        // licence or title deed, other markets don't yet. Reads off the draft's
-        // country rather than a constant so it stays right as markets launch.
-        if (draft.countryCode == 'AE')
-          const InfoNote(
-            message: 'A trade licence or title deed will be required at the '
-                'verification step (UAE market rules).',
-          ),
       ],
     );
   }
@@ -192,67 +174,6 @@ class _TypeTile extends StatelessWidget {
                 fontWeight: FontWeight.w700,
               ),
             ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// The address field with the "Map" affordance on its trailing edge.
-///
-/// Not a text field: the address has to come back with coordinates attached,
-/// and free text that doesn't geocode produces listings nobody can find on a
-/// map. Tapping anywhere on the row opens the picker.
-class _LocationRow extends StatelessWidget {
-  final String address;
-  final String community;
-  final String city;
-  final VoidCallback onTap;
-
-  const _LocationRow({
-    required this.address,
-    required this.community,
-    required this.city,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final empty = address.trim().isEmpty;
-    final label = empty
-        ? 'Add the address'
-        : (community.isNotEmpty ? '$community, $city' : address);
-
-    return Pressable(
-      onTap: onTap,
-      child: Container(
-        height: 64,
-        padding: const EdgeInsetsDirectional.only(start: 18, end: 18),
-        decoration: BoxDecoration(
-          color: AppColors.surface,
-          borderRadius: BorderRadius.circular(AppRadius.md),
-          border: Border.all(color: AppColors.line),
-        ),
-        child: Row(
-          children: [
-            const Icon(Icons.location_on_outlined,
-                size: 20, color: AppColors.primary),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: empty
-                    ? AppTextStyles.body(color: AppColors.inkMuted)
-                        .copyWith(fontSize: 16.5)
-                    : AppTextStyles.bodyStrong().copyWith(fontSize: 16.5),
-              ),
-            ),
-            const SizedBox(width: 10),
-            Text('Map',
-                style: AppTextStyles.bodyStrong(color: AppColors.primary)),
           ],
         ),
       ),

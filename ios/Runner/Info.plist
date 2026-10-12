@@ -68,5 +68,18 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>Home8 uses the camera to photograph your property, your ID and a selfie when you post a listing.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Home8 lets you choose photos and videos of your property for your listing.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Home8 records sound when you film a walkthrough video of your property.</string>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>tel</string>
+		<string>mailto</string>
+		<string>https</string>
+		<string>whatsapp</string>
+	</array>
 </dict>
 </plist>

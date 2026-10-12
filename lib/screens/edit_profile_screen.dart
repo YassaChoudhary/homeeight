@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 
 import '../state/app_scope.dart';
-import '../state/auth_controller.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_spacing.dart';
 import '../theme/app_text_styles.dart';
@@ -203,13 +202,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                       ),
                       const SizedBox(height: 18),
                       _PasswordRow(onChange: () => _notYet('Password change')),
-                      const SizedBox(height: 18),
-                      _AccountTypeRow(
-                        type: user.intent == UserIntent.listProperty
-                            ? 'Agent'
-                            : 'Individual',
-                        onBecomeAgent: () => _notYet('Agent onboarding'),
-                      ),
                       const SizedBox(height: 40),
                       Center(
                         child: GestureDetector(
@@ -484,46 +476,6 @@ class _PasswordRow extends StatelessWidget {
           ),
         ),
       ],
-    );
-  }
-}
-
-class _AccountTypeRow extends StatelessWidget {
-  final String type;
-  final VoidCallback onBecomeAgent;
-
-  const _AccountTypeRow({required this.type, required this.onBecomeAgent});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(AppRadius.md),
-        border: Border.all(color: AppColors.line),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('Account type',
-                    style: AppTextStyles.bodyStrong().copyWith(fontSize: 16.5)),
-                const SizedBox(height: 2),
-                Text(type, style: AppTextStyles.caption()),
-              ],
-            ),
-          ),
-          GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: onBecomeAgent,
-            child: Text('Become an agent',
-                style: AppTextStyles.bodyStrong(color: AppColors.primary)),
-          ),
-        ],
-      ),
     );
   }
 }

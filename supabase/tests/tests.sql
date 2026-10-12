@@ -86,6 +86,7 @@ do $$ begin
   update public.listings set price = 1 where id = 'p1';
   if exists (select 1 from public.listings where id='p1' and price = 1) then raise exception 'FAIL: anon updated'; end if;
   raise notice 'ok - anon cannot edit listings';
+exception when insufficient_privilege then raise notice 'ok - anon cannot edit listings (refused)';
 end $$;
 reset role;
 
@@ -107,15 +108,18 @@ select pg_temp.check('user A uid', (select public.firebase_uid() = 'userA'));
 insert into public.saved_listings (listing_id) values ('p1'), ('p6');
 select pg_temp.check('A saved 2', (select count(*) = 2 from public.saved_listings));
 select pg_temp.check('reels show saved for A', (select (public.reels_feed()->0->>'saved')::boolean from (select 1) x));
--- A creates a draft listing (owner filled from token)
-insert into public.listings (id, purpose, title, price) values ('mine1', 'rent', 'A draft', 50000);
-select pg_temp.check('owner_uid auto-filled', (select owner_uid = 'userA' from public.listings where id='mine1'));
-select pg_temp.check('A sees own draft', (select count(*) = 1 from public.listings where id='mine1'));
-select pg_temp.check('draft not in search', (select (public.search_listings('{"purpose":"rent"}')->>'total')::int = 5));
-update public.listings set title = 'A draft edited', status = 'in_review' where id = 'mine1';
-select pg_temp.check('A edited own', (select title = 'A draft edited' from public.listings where id='mine1'));
+-- A creates a draft listing. Since the seller migration, writes go through
+-- save_listing() (direct table writes are blocked); the owner comes from the token.
+create temp table mine (id text);
+grant all on mine to authenticated;
+insert into mine select public.save_listing('{"purpose":"rent","title":"A draft","price":50000}')->>'id';
+select pg_temp.check('owner_uid auto-filled', (select owner_uid = 'userA' from public.listings where id=(select id from mine)));
+select pg_temp.check('A sees own draft', (select count(*) = 1 from public.listings where id=(select id from mine)));
+select pg_temp.check('draft not in search', (select (public.search_listings('{"purpose":"rent","segment":"residential"}')->>'total')::int = 5));
+select public.save_listing(jsonb_build_object('id', (select id from mine), 'purpose', 'rent', 'title', 'A draft edited', 'price', 50000));
+select pg_temp.check('A edited own', (select title = 'A draft edited' from public.listings where id=(select id from mine)));
 do $$ begin
-  update public.listings set status = 'live' where id = 'mine1';
+  update public.listings set status = 'live' where id = (select id from mine);
   raise exception 'FAIL: owner self-published';
 exception when check_violation or insufficient_privilege then raise notice 'ok - owner cannot self-publish';
 end $$;
@@ -130,19 +134,18 @@ reset role;
 set role authenticated;
 set request.jwt.claims = '{"iss":"https://securetoken.google.com/home8-61d48","aud":"home8-61d48","sub":"userB","role":"authenticated"}';
 select pg_temp.check('B sees none of A saved', (select count(*) = 0 from public.saved_listings));
-select pg_temp.check('B cannot see A draft', (select count(*) = 0 from public.listings where id='mine1'));
-update public.listings set title = 'hacked' where id = 'mine1';
-delete from public.listings where id = 'mine1';
+select pg_temp.check('B cannot see A draft', (select count(*) = 0 from public.listings where id=(select id from mine)));
+select public.delete_my_listing((select id from mine));
 delete from public.saved_listings where user_uid = 'userA';
 reset role;
 select pg_temp.check('B could not touch A data',
-  (select title = 'A draft edited' from public.listings where id='mine1') and (select count(*) = 2 from public.saved_listings where user_uid='userA'));
+  (select title = 'A draft edited' from public.listings where id=(select id from mine)) and (select count(*) = 2 from public.saved_listings where user_uid='userA'));
 
 -- ---------- A unsaves and deletes ----------
 set role authenticated;
 set request.jwt.claims = '{"iss":"https://securetoken.google.com/home8-61d48","aud":"home8-61d48","sub":"userA","role":"authenticated"}';
 delete from public.saved_listings where listing_id = 'p1';
-delete from public.listings where id = 'mine1';
+select public.delete_my_listing((select id from mine));
 reset role;
 select pg_temp.check('A unsaved p1 and deleted draft',
-  (select count(*) = 1 from public.saved_listings where user_uid='userA') and not exists (select 1 from public.listings where id='mine1'));
+  (select count(*) = 1 from public.saved_listings where user_uid='userA') and not exists (select 1 from public.listings where id=(select id from mine)));

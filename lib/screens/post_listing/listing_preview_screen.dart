@@ -12,7 +12,8 @@ import '../../widgets/listing_card.dart';
 import '../../widgets/pill_button.dart';
 import '../../widgets/property_image.dart';
 import 'listing_submitted_screen.dart';
-import 'step_location_screen.dart';
+import '../../state/app_scope.dart';
+import '../property_detail_screen.dart';
 
 /// Screen 38 — "Preview".
 ///
@@ -40,16 +41,6 @@ class ListingPreviewScreen extends StatefulWidget {
 
 class _ListingPreviewScreenState extends State<ListingPreviewScreen> {
   Future<void> _editStep(PostStep step) async {
-    if (step == PostStep.location) {
-      final result = await Navigator.of(context).push<ListingDraft>(
-        MaterialPageRoute(
-          builder: (_) => StepLocationScreen(draft: widget.controller.draft),
-        ),
-      );
-      if (result != null) widget.controller.edit((_) => result);
-      return;
-    }
-
     // Sends the stepper to that step and unwinds this route, so the user is
     // back in the flow rather than looking at the form through a preview.
     widget.controller.goTo(step);
@@ -64,8 +55,8 @@ class _ListingPreviewScreenState extends State<ListingPreviewScreen> {
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
         ..showSnackBar(
-          const SnackBar(
-            content: Text("Couldn't submit right now. Try again."),
+          SnackBar(
+            content: Text(widget.controller.errorMessage),
             behavior: SnackBarBehavior.floating,
             backgroundColor: AppColors.navDark,
           ),
@@ -92,12 +83,36 @@ class _ListingPreviewScreenState extends State<ListingPreviewScreen> {
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(
-        const SnackBar(
-          content: Text("Couldn't save the draft. Try again."),
+        SnackBar(
+          content: Text("Couldn't save — ${widget.controller.errorMessage}"),
           behavior: SnackBarBehavior.floating,
           backgroundColor: AppColors.navDark,
         ),
       );
+  }
+
+  /// The real listing page, built from the draft.
+  void _openFullPreview(ListingDraft draft) {
+    final user = AppScope.authOf(context).user;
+    final lister = widget.controller.lister;
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => PropertyDetailScreen(
+          propertyId: draft.id ?? 'preview',
+          preloaded: draft.toPreviewProperty(
+            agentName: lister?.name ?? user?.name ?? '',
+            agency: (lister?.agency.isNotEmpty ?? false)
+                ? lister!.agency
+                : ((lister?.type ?? 'individual') == 'individual'
+                    ? 'Property owner'
+                    : ''),
+            avatarUrl: lister?.avatarUrl,
+            fairPrice: widget.controller.guidance?.valueOrNull,
+          ),
+          previewOnly: true,
+        ),
+      ),
+    );
   }
 
   @override
@@ -146,7 +161,13 @@ class _ListingPreviewScreenState extends State<ListingPreviewScreen> {
                         message: 'This is exactly what buyers will see',
                       ),
                       const SizedBox(height: 16),
-                      _PreviewCard(draft: draft),
+                      // Tap the card to see the full listing page as
+                      // buyers will.
+                      GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () => _openFullPreview(draft),
+                        child: _PreviewCard(draft: draft),
+                      ),
                       const SizedBox(height: 24),
                       const FieldLabel('Edit a step'),
                       const SizedBox(height: 12),
@@ -154,7 +175,7 @@ class _ListingPreviewScreenState extends State<ListingPreviewScreen> {
                         spacing: 10,
                         runSpacing: 10,
                         children: [
-                          for (final step in PostStep.values)
+                          for (final step in PostStep.chipOrder)
                             _EditChip(
                               label: step.chipLabel,
                               // An incomplete step gets an amber dot rather
@@ -166,7 +187,15 @@ class _ListingPreviewScreenState extends State<ListingPreviewScreen> {
                         ],
                       ),
                       const SizedBox(height: 18),
-                      if (ready)
+                      if (widget.controller.accountPending)
+                        const InfoNote(
+                          tone: NoteTone.warning,
+                          icon: Icons.schedule_rounded,
+                          message: 'Your account is waiting for verification. '
+                              'Save this as a draft — you can publish it from '
+                              'My Listings once you\'re approved.',
+                        )
+                      else if (ready)
                         const InfoNote(
                           tone: NoteTone.success,
                           icon: Icons.check_rounded,
@@ -191,7 +220,9 @@ class _ListingPreviewScreenState extends State<ListingPreviewScreen> {
                       PrimaryButton(
                         label: 'Publish listing',
                         loading: widget.controller.submitting,
-                        onTap: ready ? _publish : null,
+                        onTap: ready && !widget.controller.accountPending
+                            ? _publish
+                            : null,
                       ),
                       const SizedBox(height: 4),
                       TertiaryButton(
@@ -220,12 +251,13 @@ class _PreviewCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final width = MediaQuery.sizeOf(context).width;
     final photoCount = draft.photos.length;
-    final verified = draft.permitComplete;
+    // Same rule as review: deed + ID → Verified badge.
+    final verified = draft.titleDeed != null && draft.idScanned;
 
     return Container(
       decoration: BoxDecoration(
         color: AppColors.surface,
-        borderRadius: BorderRadius.circular(AppRadius.md),
+        borderRadius: BorderRadius.circular(AppRadius.lg + 6),
         boxShadow: [
           BoxShadow(
             color: AppColors.ink.withValues(alpha: 0.07),
@@ -242,6 +274,7 @@ class _PreviewCard extends StatelessWidget {
             height: 200,
             child: PropertyImage(
               seed: draft.gradientSeed,
+              url: draft.coverUrl,
               decodeWidth: width,
               child: Stack(
                 children: [
@@ -257,7 +290,7 @@ class _PreviewCard extends StatelessWidget {
                           borderRadius: BorderRadius.circular(999),
                         ),
                         child: Text(
-                          '${draft.coverIndex + 1} / $photoCount',
+                          '1 / $photoCount',
                           style: AppTextStyles.micro(color: Colors.white)
                               .copyWith(fontWeight: FontWeight.w600),
                         ),
@@ -313,13 +346,23 @@ class _PreviewCard extends StatelessWidget {
                   TextSpan(
                     style: AppTextStyles.display().copyWith(fontSize: 20),
                     children: [
-                      TextSpan(text: draft.priceLine),
-                      if (draft.pricePerUnit > 0)
-                        TextSpan(
-                          text: ' · ${formatThousands(draft.pricePerUnit)}'
-                              '/${draft.areaUnit.label}',
-                          style: AppTextStyles.caption(),
-                        ),
+                      TextSpan(
+                        text: (draft.price ?? 0) > 0
+                            ? '${draft.currency} ${formatThousands(draft.price!)}'
+                            : 'Price not set',
+                      ),
+                      TextSpan(
+                        text: [
+                          if (draft.purpose == Purpose.rent &&
+                              draft.period != null &&
+                              (draft.price ?? 0) > 0)
+                            ' / ${draft.period!.label}',
+                          if (draft.pricePerUnit > 0)
+                            ' · ${formatThousands(draft.pricePerUnit)}/${draft.areaUnit.label}',
+                        ].join(),
+                        style: AppTextStyles.caption()
+                            .copyWith(fontSize: 14.5),
+                      ),
                     ],
                   ),
                 ),

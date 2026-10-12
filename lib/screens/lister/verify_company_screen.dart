@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../../core/async_value.dart';
+import '../../data/listing_repository.dart';
 import '../../models/lister_profile.dart';
 import '../../models/uploaded_doc.dart';
 import '../../state/app_scope.dart';
@@ -7,6 +9,7 @@ import '../../theme/app_colors.dart';
 import '../../theme/app_spacing.dart';
 import '../../theme/app_text_styles.dart';
 import '../../widgets/form_fields.dart';
+import '../../widgets/media_picker.dart';
 import '../../widgets/pill_button.dart';
 
 /// Screen 29 — company / licence verification.
@@ -65,25 +68,45 @@ class _VerifyCompanyScreenState extends State<VerifyCompanyScreen> {
       _licence.text.trim().isNotEmpty &&
       _tradeLicence != null;
 
-  /// Stands in for a file picker.
-  ///
-  /// `file_picker` isn't a dependency yet — adding it needs Android manifest
-  /// and iOS plist changes that can't be verified from this environment. Until
-  /// then this attaches a named placeholder so the rest of the screen (the
-  /// uploaded row, the Replace action, the enabled CTA) is exercised for real.
-  ///
-  /// To wire the real thing: replace the body with the picker call and build
-  /// the UploadedDoc from its result. Nothing else on this screen changes.
-  void _attach({required bool isBrokerCard}) {
-    final year = DateTime.now().year;
-    setState(() {
-      if (isBrokerCard) {
-        _brokerCard = UploadedDoc.simulated('broker-card-$year.jpg',
-            bytes: 842000);
-      } else {
-        _tradeLicence = UploadedDoc.simulated('trade-licence-$year.pdf');
-      }
-    });
+  /// Which document is uploading right now (null = none).
+  bool? _uploadingBrokerCard;
+
+  /// Picks a PDF / image (or photographs it) and uploads it to the private
+  /// bucket — only this account and the Home8 team can open it.
+  Future<void> _attach({required bool isBrokerCard}) async {
+    if (_uploadingBrokerCard != null) return;
+    final file = await MediaPicker.document(context);
+    if (file == null || !mounted) return;
+    setState(() => _uploadingBrokerCard = isBrokerCard);
+    try {
+      final stored = await AppScope.repositoryOf(context).uploadListingFile(
+        kind: ListingFileKind.privateDoc,
+        bytes: file.bytes,
+        fileName: file.name,
+        contentType: file.mimeType,
+      );
+      if (!mounted) return;
+      setState(() {
+        if (isBrokerCard) {
+          _brokerCard = stored;
+        } else {
+          _tradeLicence = stored;
+        }
+      });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(
+          content: Text(e is RepositoryException
+              ? e.message
+              : "Couldn't upload. Try again."),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: AppColors.navDark,
+        ));
+    } finally {
+      if (mounted) setState(() => _uploadingBrokerCard = null);
+    }
   }
 
   Future<void> _submit() async {
@@ -179,7 +202,9 @@ class _VerifyCompanyScreenState extends State<VerifyCompanyScreen> {
                   const SizedBox(height: 8),
                   if (licence == null)
                     DashedAddTile(
-                      label: 'Upload trade licence (PDF or photo)',
+                      label: _uploadingBrokerCard == false
+                          ? 'Uploading…'
+                          : 'Upload trade licence (PDF or photo)',
                       icon: Icons.upload_file_rounded,
                       height: 78,
                       onTap: () => _attach(isBrokerCard: false),
@@ -194,7 +219,9 @@ class _VerifyCompanyScreenState extends State<VerifyCompanyScreen> {
                   const SizedBox(height: 12),
                   if (card == null)
                     DashedAddTile(
-                      label: 'Add broker card (optional)',
+                      label: _uploadingBrokerCard == true
+                          ? 'Uploading…'
+                          : 'Add broker card (optional)',
                       onTap: () => _attach(isBrokerCard: true),
                     )
                   else

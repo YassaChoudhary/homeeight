@@ -1,59 +1,90 @@
 import 'package:flutter/material.dart';
 
-import '../../models/uploaded_doc.dart';
 import '../../state/post_listing_controller.dart';
 import '../../theme/app_colors.dart';
 import '../../theme/app_spacing.dart';
 import '../../theme/app_text_styles.dart';
 import '../../widgets/form_fields.dart';
+import '../../widgets/media_picker.dart';
 import '../../widgets/pill_button.dart';
 
-/// Screen 37 — "Verify your listing", the fields of step 4.
+/// Step 5 — "Verify your listing" (prototype screen 43).
 ///
-/// ## Three gates, in order
+/// * Title deed / Ejari — a PDF or photo, uploaded to a PRIVATE bucket.
+/// * ID — photos of the front and back, private.
+/// * Selfie — front camera, private. Unlocks after the ID, as designed.
+/// * Permit number — shown on the listing ("Permit #…").
 ///
-/// The document, then the ID, then the selfie. The selfie is deliberately
-/// **locked until the ID scan is done** rather than merely disabled-looking: a
-/// liveness check that can't be tied to a scanned document proves nothing, and
-/// letting someone do them out of order means explaining a rejection later.
-///
-/// The lock is state on the draft (`idScanned`), not a local bool, so backing
-/// out to Photos and returning doesn't silently unlock it.
+/// Only the owner (and you, in the Supabase dashboard) can open these files.
+/// Required in the UAE; optional elsewhere but earns the Verified badge.
 class StepPermit extends StatelessWidget {
   final PostListingController controller;
 
   const StepPermit({super.key, required this.controller});
 
-  /// Stands in for a file picker — see the note on `StepMedia`. Same one-line
-  /// replacement when `file_picker` lands.
-  void _attachDeed() {
-    final reference = controller.draft.id ?? '71-4402';
-    controller.edit(
-      (d) => d.copyWith(
-        titleDeed: UploadedDoc.simulated('deed-$reference.pdf', bytes: 940000),
-      ),
-    );
+  Future<void> _attachDeed(BuildContext context) async {
+    final file = await MediaPicker.document(context);
+    if (file == null) return;
+    final ok = await controller.uploadDoc(DocSlot.titleDeed, file);
+    if (!ok && context.mounted) _tell(context, controller.errorMessage);
   }
 
-  /// Stands in for the document-scanner SDK.
-  void _scanId() => controller.edit((d) => d.copyWith(idScanned: true));
+  /// Front, then back — two photos.
+  Future<void> _scanId(BuildContext context) async {
+    final draft = controller.draft;
+    if (draft.idFront == null) {
+      _tell(context, 'Photograph the FRONT of your ${draft.idDocumentName}.');
+      final front = await MediaPicker.photo(context, preferFront: false);
+      if (front == null || !context.mounted) return;
+      final ok = await controller.uploadDoc(DocSlot.idFront, front);
+      if (!context.mounted) return;
+      if (!ok) {
+        _tell(context, controller.errorMessage);
+        return;
+      }
+    }
+    if (controller.draft.idBack == null) {
+      _tell(context, 'Now the BACK of your ${draft.idDocumentName}.');
+      final back = await MediaPicker.photo(context, preferFront: false);
+      if (back == null || !context.mounted) return;
+      final ok = await controller.uploadDoc(DocSlot.idBack, back);
+      if (!ok && context.mounted) _tell(context, controller.errorMessage);
+    }
+  }
 
-  void _selfie() {
+  Future<void> _selfie(BuildContext context) async {
     if (!controller.draft.idScanned) return;
-    controller.edit((d) => d.copyWith(selfieDone: true));
+    final file =
+        await MediaPicker.photo(context, preferFront: true, cameraOnly: true);
+    if (file == null || !context.mounted) return;
+    final ok = await controller.uploadDoc(DocSlot.selfie, file);
+    if (!ok && context.mounted) _tell(context, controller.errorMessage);
+  }
+
+  static void _tell(BuildContext context, String message) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(
+        content: Text(message),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: AppColors.navDark,
+      ));
   }
 
   @override
   Widget build(BuildContext context) {
     final draft = controller.draft;
     final deed = draft.titleDeed;
-    final uaeMarket = draft.countryCode == 'AE';
+    final deedBusy = controller.isUploading(DocSlot.titleDeed);
+    final idBusy = controller.isUploading(DocSlot.idFront) ||
+        controller.isUploading(DocSlot.idBack);
+    final selfieBusy = controller.isUploading(DocSlot.selfie);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          uaeMarket
+          draft.verificationRequired
               ? 'Required in the UAE market. Verified listings rank higher '
                   'and earn the badge.'
               : 'Optional in this market, but verified listings rank higher '
@@ -61,51 +92,107 @@ class StepPermit extends StatelessWidget {
           style: AppTextStyles.body(color: AppColors.inkMuted),
         ),
         const SizedBox(height: 20),
-        if (deed == null)
-          _CheckRow(
-            title: 'Title deed / Ejari',
-            subtitle: 'Tap to upload a PDF or photo',
-            icon: Icons.description_outlined,
-            state: _CheckState.pending,
-            actionLabel: 'Upload',
-            onTap: _attachDeed,
-          )
-        else
-          UploadedRow(
-            fileName: 'Title deed / Ejari',
-            statusLine: 'Uploaded · ${deed.name}',
-            showTick: true,
-          ),
+        _CheckRow(
+          title: 'Title deed / Ejari',
+          subtitle: deedBusy
+              ? 'Uploading…'
+              : deed == null
+                  ? 'Tap to upload a PDF or photo'
+                  : 'Uploaded · ${deed.name}',
+          icon: deed == null
+              ? Icons.description_outlined
+              : Icons.task_outlined,
+          state: deed != null ? _CheckState.done : _CheckState.pending,
+          busy: deedBusy,
+          actionLabel: 'Upload',
+          // Tapping an uploaded deed replaces it.
+          onTap: deedBusy ? null : () => _attachDeed(context),
+        ),
         const SizedBox(height: 12),
         _CheckRow(
-          title: 'Emirates ID',
-          subtitle: draft.idScanned
-              ? 'Scanned · front & back'
-              : 'Tap to scan front & back',
+          title: draft.idDocumentName,
+          subtitle: idBusy
+              ? 'Uploading…'
+              : draft.idScanned
+                  ? 'Scanned · front & back'
+                  : draft.idFront != null
+                      ? 'Front done — tap to scan the back'
+                      : 'Tap to scan front & back',
           icon: Icons.badge_outlined,
           state: draft.idScanned ? _CheckState.done : _CheckState.active,
-          actionLabel: draft.idScanned ? null : 'Scan',
-          onTap: draft.idScanned ? null : _scanId,
+          busy: idBusy,
+          actionLabel: 'Scan',
+          onTap: idBusy || draft.idScanned ? null : () => _scanId(context),
         ),
         const SizedBox(height: 12),
         _CheckRow(
           title: 'Selfie check',
-          subtitle: draft.selfieDone
-              ? 'Complete'
-              : draft.idScanned
-                  ? 'Tap to take a quick selfie'
-                  : 'Unlocks after ID scan',
-          icon: Icons.face_retouching_natural_outlined,
+          subtitle: selfieBusy
+              ? 'Uploading…'
+              : draft.selfieDone
+                  ? 'Complete'
+                  : draft.idScanned
+                      ? 'Tap to take a quick selfie'
+                      : 'Unlocks after ID scan',
+          icon: Icons.smartphone_rounded,
           state: draft.selfieDone
               ? _CheckState.done
               : draft.idScanned
                   ? _CheckState.active
                   : _CheckState.locked,
-          actionLabel: draft.idScanned && !draft.selfieDone ? 'Start' : null,
-          onTap: draft.idScanned && !draft.selfieDone ? _selfie : null,
+          busy: selfieBusy,
+          actionLabel: 'Start',
+          onTap: draft.idScanned && !draft.selfieDone && !selfieBusy
+              ? () => _selfie(context)
+              : null,
         ),
         const SizedBox(height: 20),
+        _PermitNumberField(controller: controller),
+        const SizedBox(height: 20),
         const _BenefitsPanel(),
+      ],
+    );
+  }
+}
+
+/// Permit / advertising number — shown on the listing as "Permit #…".
+class _PermitNumberField extends StatefulWidget {
+  final PostListingController controller;
+  const _PermitNumberField({required this.controller});
+
+  @override
+  State<_PermitNumberField> createState() => _PermitNumberFieldState();
+}
+
+class _PermitNumberFieldState extends State<_PermitNumberField> {
+  late final TextEditingController _text =
+      TextEditingController(text: widget.controller.draft.permitNo);
+
+  @override
+  void dispose() {
+    _text.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final required = widget.controller.draft.verificationRequired;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        FieldLabel(required
+            ? 'Permit number (Trakheesi / DLD)'
+            : 'Permit number (optional)'),
+        const SizedBox(height: 8),
+        AppTextField(
+          controller: _text,
+          pill: true,
+          icon: Icons.confirmation_number_outlined,
+          hint: 'e.g. 7145-2201',
+          textCapitalization: TextCapitalization.characters,
+          onChanged: (t) =>
+              widget.controller.edit((d) => d.copyWith(permitNo: t)),
+        ),
       ],
     );
   }
@@ -123,6 +210,7 @@ class _CheckRow extends StatelessWidget {
   final _CheckState state;
   final String? actionLabel;
   final VoidCallback? onTap;
+  final bool busy;
 
   const _CheckRow({
     required this.title,
@@ -131,6 +219,7 @@ class _CheckRow extends StatelessWidget {
     required this.state,
     this.actionLabel,
     this.onTap,
+    this.busy = false,
   });
 
   @override
@@ -154,12 +243,12 @@ class _CheckRow extends StatelessWidget {
       onTap: onTap,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 160),
-        padding: const EdgeInsets.all(14),
+        padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
           color: locked
               ? AppColors.surface.withValues(alpha: 0.6)
               : AppColors.surface,
-          borderRadius: BorderRadius.circular(AppRadius.md),
+          borderRadius: BorderRadius.circular(AppRadius.lg + 4),
           border: Border.all(
             color: active ? AppColors.primary : AppColors.line,
             width: active ? 1.8 : 1,
@@ -198,7 +287,16 @@ class _CheckRow extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 10),
-            if (done)
+            if (busy)
+              const SizedBox(
+                width: 22,
+                height: 22,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2.4,
+                  valueColor: AlwaysStoppedAnimation<Color>(AppColors.primary),
+                ),
+              )
+            else if (done)
               const Icon(Icons.check_rounded,
                   color: AppColors.success, size: 22)
             else if (locked)
@@ -231,57 +329,34 @@ class _CheckRow extends StatelessWidget {
 class _BenefitsPanel extends StatelessWidget {
   const _BenefitsPanel();
 
-  static const List<String> _benefits = [
-    'Verified badge on the card',
-    'Higher search ranking',
-    'Permit number shown on the listing',
-    'Buyer trust score boost',
-  ];
-
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(18),
+      padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         color: AppColors.navDark,
-        borderRadius: BorderRadius.circular(AppRadius.md),
+        borderRadius: BorderRadius.circular(AppRadius.lg + 4),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              const Icon(Icons.shield_outlined,
-                  color: AppColors.primaryOnDark, size: 19),
-              const SizedBox(width: 10),
+              const Icon(Icons.verified_user_outlined,
+                  color: AppColors.primaryOnDark, size: 20),
+              const SizedBox(width: 12),
               Text('What you get once verified',
                   style: AppTextStyles.bodyStrong(color: Colors.white)
                       .copyWith(fontSize: 16.5)),
             ],
           ),
           const SizedBox(height: 14),
-          for (final benefit in _benefits)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 9),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Padding(
-                    padding: EdgeInsets.only(top: 7),
-                    child: Icon(Icons.circle,
-                        size: 5, color: AppColors.primaryOnDark),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      benefit,
-                      style: AppTextStyles.body(color: Colors.white70)
-                          .copyWith(fontSize: 14.5, height: 20 / 14.5),
-                    ),
-                  ),
-                ],
-              ),
-            ),
+          Text(
+            'Verified badge on the card · higher search ranking · permit '
+            'number shown on the listing · buyer trust score boost.',
+            style: AppTextStyles.body(color: Colors.white70)
+                .copyWith(fontSize: 14.5, height: 22 / 14.5),
+          ),
         ],
       ),
     );

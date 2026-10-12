@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import '../core/async_value.dart';
 import '../models/lister_profile.dart';
@@ -8,6 +9,8 @@ import '../models/geo.dart';
 import '../models/property.dart';
 import '../models/property_category.dart';
 import '../models/search_query.dart';
+import '../models/uploaded_doc.dart';
+import '../state/recent_searches.dart';
 import 'listing_repository.dart';
 
 /// In-memory stand-in for the API. It filters, sorts and paginates for real —
@@ -217,7 +220,7 @@ class MockListingRepository implements ListingRepository {
 
   @override
   Future<List<String>> recentSearches() {
-    return _respond(() => const ['Marina · 2BR', 'JVC villas', 'Downtown studio']);
+    return _respond(() => RecentSearches.all);
   }
 
   @override
@@ -384,7 +387,7 @@ class MockListingRepository implements ListingRepository {
   }
 
   @override
-  Future<MyListing> submitListing(ListingDraft draft) {
+  Future<MyListing> submitListing(ListingDraft draft, {ListerSummary? lister}) {
     return _respond(() {
       final id = draft.id ?? 'l${_idCounter++}';
       // Never goes straight to live: permit and photo checks are server-side,
@@ -448,6 +451,39 @@ class MockListingRepository implements ListingRepository {
     });
   }
 
+  /// Demo mode only (no Supabase key): nothing leaves the phone, so the file
+  /// gets a placeholder address. Run with env.json for real uploads.
+  @override
+  Future<UploadedDoc> uploadListingFile({
+    required ListingFileKind kind,
+    required Uint8List bytes,
+    required String fileName,
+    String? contentType,
+  }) {
+    return _respond(() {
+      final path = 'demo/${DateTime.now().microsecondsSinceEpoch}-$fileName';
+      return UploadedDoc(
+        name: fileName,
+        bytes: bytes.length,
+        storagePath: path,
+        remoteUrl: kind == ListingFileKind.privateDoc ? null : 'mock://$path',
+      );
+    });
+  }
+
+  @override
+  Future<void> deleteListingFiles(ListingFileKind kind, List<String> paths) async {}
+
+  @override
+  Future<void> recordListingEvent(String listingId, ListingEvent event) async {}
+
+  /// Demo mode: nothing on a server, so the account counts as approved.
+  @override
+  Future<ListerProfile?> myVerification() => _respond(() => const ListerProfile(
+        type: ListerType.individual,
+        status: VerificationStatus.verified,
+      ));
+
   @override
   Future<ListerProfile> submitVerification(ListerProfile profile) {
     return _respond(
@@ -484,8 +520,9 @@ class MockListingRepository implements ListingRepository {
               DraftPhoto(id: 'ph2', seed: 3),
               DraftPhoto(id: 'ph3', seed: 5),
             ],
-            idScanned: true,
-            selfieDone: true,
+            idFront: UploadedDoc(name: 'id-front.jpg'),
+            idBack: UploadedDoc(name: 'id-back.jpg'),
+            selfie: UploadedDoc(name: 'selfie.jpg'),
           ),
         ),
         MyListing(
@@ -510,7 +547,8 @@ class MockListingRepository implements ListingRepository {
               DraftPhoto(id: 'ph4', seed: 1),
               DraftPhoto(id: 'ph5', seed: 4),
             ],
-            idScanned: true,
+            idFront: UploadedDoc(name: 'id-front.jpg'),
+            idBack: UploadedDoc(name: 'id-back.jpg'),
           ),
         ),
         MyListing(
@@ -552,8 +590,9 @@ class MockListingRepository implements ListingRepository {
               DraftPhoto(id: 'ph6', seed: 2),
               DraftPhoto(id: 'ph7', seed: 6),
             ],
-            idScanned: true,
-            selfieDone: true,
+            idFront: UploadedDoc(name: 'id-front.jpg'),
+            idBack: UploadedDoc(name: 'id-back.jpg'),
+            selfie: UploadedDoc(name: 'selfie.jpg'),
           ),
         ),
       ];

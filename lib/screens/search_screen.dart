@@ -6,6 +6,7 @@ import '../models/geo.dart';
 import '../models/property.dart';
 import '../models/search_query.dart';
 import '../state/app_scope.dart';
+import '../state/recent_searches.dart';
 import '../state/listings_controller.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_spacing.dart';
@@ -13,6 +14,7 @@ import '../theme/app_text_styles.dart';
 import '../widgets/home_nav_bar.dart';
 import '../widgets/listing_card.dart';
 import '../widgets/state_views.dart';
+import 'bua_search_sheet.dart';
 import 'filters_sheet.dart';
 import 'map/map_area_screen.dart';
 import 'property_detail_screen.dart';
@@ -32,7 +34,8 @@ class _SearchScreenState extends State<SearchScreen>
   final FocusNode _focus = FocusNode();
 
   late final AsyncController<List<Property>> _deals;
-  late final AsyncController<List<String>> _recents;
+  /// What this user actually searched for on this phone (newest first).
+  List<String> _recents = RecentSearches.all;
 
   final ValueNotifier<List<SearchSuggestion>> _suggestions =
       ValueNotifier<List<SearchSuggestion>>(const []);
@@ -50,13 +53,9 @@ class _SearchScreenState extends State<SearchScreen>
     _deals = AsyncController<List<Property>>(
       () => AppScope.repositoryOf(context).highlights(),
     );
-    _recents = AsyncController<List<String>>(
-      () => AppScope.repositoryOf(context).recentSearches(),
-    );
     _controller.addListener(_onTextChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _deals.load();
-      _recents.load();
     });
   }
 
@@ -89,23 +88,76 @@ class _SearchScreenState extends State<SearchScreen>
     _suggestions.dispose();
     _typing.dispose();
     _deals.dispose();
-    _recents.dispose();
     super.dispose();
   }
 
-  void _goResults({String? term, String? community, GeoBounds? bounds}) {
+  void _reloadRecents() {
+    if (mounted) setState(() => _recents = RecentSearches.all);
+  }
+
+  Future<void> _remember(String term) async {
+    await RecentSearches.remember(term);
+    _reloadRecents();
+  }
+
+  Future<void> _goResults({
+    String? term,
+    GeoBounds? bounds,
+    SearchQuery? query,
+    bool mapMode = false,
+  }) async {
     _focus.unfocus();
-    Navigator.of(context).push(
+    final text = (term ?? _controller.text).trim();
+    if (text.isNotEmpty) await _remember(text);
+    if (!mounted) return;
+    final base = query ?? _query;
+    await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => ResultsScreen(
-          initialQuery: _query.copyWith(
-            term: term ?? _controller.text,
-            community: community,
+          initialMapMode: mapMode,
+          initialQuery: base.copyWith(
+            term: text,
+            // A typed search replaces any earlier map area / community.
+            clearCommunity: text.isNotEmpty,
+            clearBounds: text.isNotEmpty && bounds == null,
             bounds: bounds,
+            page: 1,
           ),
         ),
       ),
     );
+    _reloadRecents();
+  }
+
+  /// A listing suggestion opens that home; anything else (place, type)
+  /// searches for it.
+  void _openSuggestion(SearchSuggestion s) {
+    if (s.id.startsWith('l:')) {
+      _focus.unfocus();
+      _remember(_controller.text);
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => PropertyDetailScreen(propertyId: s.id.substring(2)),
+        ),
+      );
+      return;
+    }
+    _controller.text = s.title;
+    _goResults(term: s.title);
+  }
+
+  /// Search by built-up area: size range + live count, then results.
+  Future<void> _openBua() async {
+    _focus.unfocus();
+    final result = await BuaSearchSheet.show(context, _query);
+    if (result == null || !mounted) return;
+    setState(() => _query = result);
+    _goResults(term: '', query: result);
+  }
+
+  Future<void> _clearRecents() async {
+    await RecentSearches.clear();
+    _reloadRecents();
   }
 
   /// Frame an area on the map, then show results inside it.
@@ -121,7 +173,7 @@ class _SearchScreenState extends State<SearchScreen>
       ),
     );
     if (bounds == null || !mounted) return;
-    _goResults(bounds: bounds);
+    _goResults(term: '', bounds: bounds, mapMode: true);
   }
 
   Future<void> _openFilters() async {
@@ -155,47 +207,74 @@ class _SearchScreenState extends State<SearchScreen>
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('RECENT',
-                        style: AppTextStyles.micro()
-                            .copyWith(letterSpacing: 0.6)),
-                    const SizedBox(height: 12),
-                    ListenableBuilder(
-                      listenable: _recents,
-                      builder: (context, _) => _recents.state.when(
-                        loading: () => const Wrap(
-                          spacing: 10,
-                          runSpacing: 10,
-                          children: [
-                            SkeletonBox(height: 40, width: 120, radius: 999),
-                            SkeletonBox(height: 40, width: 96, radius: 999),
-                          ],
-                        ),
-                        error: (_) => const SizedBox.shrink(),
-                        data: (items) => Wrap(
-                          spacing: 10,
-                          runSpacing: 10,
-                          children: [
-                            for (final term in items)
-                              GestureDetector(
-                                behavior: HitTestBehavior.opaque,
-                                onTap: () => _goResults(term: term),
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(
-                                      horizontal: 16, vertical: 10),
-                                  decoration: BoxDecoration(
-                                    color: AppColors.primaryTint
-                                        .withValues(alpha: 0.6),
-                                    borderRadius: BorderRadius.circular(999),
-                                  ),
-                                  child: Text(term,
-                                      style: AppTextStyles.bodyStrong(
-                                          color: AppColors.ink)),
+                    if (_recents.isNotEmpty) ...[
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text('RECENT',
+                                style: AppTextStyles.micro()
+                                    .copyWith(letterSpacing: 0.6)),
+                          ),
+                          GestureDetector(
+                            behavior: HitTestBehavior.opaque,
+                            onTap: _clearRecents,
+                            child: Text('Clear',
+                                style: AppTextStyles.caption(
+                                        color: AppColors.primary)
+                                    .copyWith(fontWeight: FontWeight.w700)),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      Wrap(
+                        spacing: 10,
+                        runSpacing: 10,
+                        children: [
+                          for (final term in _recents)
+                            GestureDetector(
+                              behavior: HitTestBehavior.opaque,
+                              onTap: () {
+                                _controller.text = term;
+                                _goResults(term: term);
+                              },
+                              child: Container(
+                                padding: const EdgeInsets.fromLTRB(
+                                    14, 10, 10, 10),
+                                decoration: BoxDecoration(
+                                  color: AppColors.primaryTint
+                                      .withValues(alpha: 0.6),
+                                  borderRadius: BorderRadius.circular(999),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Icon(Icons.history_rounded,
+                                        size: 16, color: AppColors.inkMuted),
+                                    const SizedBox(width: 6),
+                                    Text(term,
+                                        style: AppTextStyles.bodyStrong(
+                                            color: AppColors.ink)),
+                                    const SizedBox(width: 4),
+                                    GestureDetector(
+                                      behavior: HitTestBehavior.opaque,
+                                      onTap: () async {
+                                        await RecentSearches.remove(term);
+                                        _reloadRecents();
+                                      },
+                                      child: const Padding(
+                                        padding: EdgeInsets.all(2),
+                                        child: Icon(Icons.close_rounded,
+                                            size: 15,
+                                            color: AppColors.inkMuted),
+                                      ),
+                                    ),
+                                  ],
                                 ),
                               ),
-                          ],
-                        ),
+                            ),
+                        ],
                       ),
-                    ),
+                    ],
                     _buildSuggestions(),
                     const SizedBox(height: 20),
                     _ActionCard(
@@ -208,8 +287,8 @@ class _SearchScreenState extends State<SearchScreen>
                     _ActionCard(
                       icon: Icons.grid_4x4_rounded,
                       title: 'Search by built-up area',
-                      subtitle: 'Find homes by BUA range (sqft)',
-                      onTap: _openFilters,
+                      subtitle: 'Find homes by size (sqft or sqm)',
+                      onTap: _openBua,
                     ),
                     const SizedBox(height: 26),
                     Row(
@@ -220,7 +299,7 @@ class _SearchScreenState extends State<SearchScreen>
                         ),
                         GestureDetector(
                           behavior: HitTestBehavior.opaque,
-                          onTap: () => _goResults(),
+                          onTap: () => _goResults(term: ''),
                           child: Text('See all',
                               style: AppTextStyles.bodyStrong(
                                   color: AppColors.primary)),
@@ -373,7 +452,7 @@ class _SearchScreenState extends State<SearchScreen>
             for (final s in suggestions)
               GestureDetector(
                 behavior: HitTestBehavior.opaque,
-                onTap: () => _goResults(term: s.title, community: s.title),
+                onTap: () => _openSuggestion(s),
                 child: Container(
                   padding: const EdgeInsets.symmetric(vertical: 12),
                   decoration: const BoxDecoration(
@@ -388,8 +467,14 @@ class _SearchScreenState extends State<SearchScreen>
                           color: AppColors.primaryTint,
                           borderRadius: BorderRadius.circular(10),
                         ),
-                        child: const Icon(Icons.location_on_rounded,
-                            color: AppColors.primary, size: 18),
+                        child: Icon(
+                            s.id.startsWith('l:')
+                                ? Icons.home_rounded
+                                : s.id.startsWith('t:')
+                                    ? Icons.apartment_rounded
+                                    : Icons.location_on_rounded,
+                            color: AppColors.primary,
+                            size: 18),
                       ),
                       const SizedBox(width: 12),
                       Expanded(
@@ -403,8 +488,14 @@ class _SearchScreenState extends State<SearchScreen>
                           ],
                         ),
                       ),
-                      Text(formatThousands(s.count),
-                          style: AppTextStyles.caption()),
+                      if (!s.id.startsWith('l:'))
+                        Text(
+                            '${formatThousands(s.count)} '
+                            '${s.count == 1 ? 'home' : 'homes'}',
+                            style: AppTextStyles.caption())
+                      else
+                        const Icon(Icons.chevron_right_rounded,
+                            color: AppColors.inkMuted),
                     ],
                   ),
                 ),

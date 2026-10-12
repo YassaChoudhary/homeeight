@@ -105,6 +105,10 @@ class SearchQuery {
     // a nullable field needs an explicit flag. Needed by the Filters sheet when
     // switching property nature invalidates the selected type.
     bool clearPropertyType = false,
+    bool clearPrice = false,
+    bool clearBua = false,
+    bool clearCommunity = false,
+    bool clearFurnishing = false,
   }) {
     return SearchQuery(
       term: term ?? this.term,
@@ -112,14 +116,14 @@ class SearchQuery {
       segment: segment ?? this.segment,
       propertyType:
           clearPropertyType ? null : (propertyType ?? this.propertyType),
-      community: community ?? this.community,
-      priceMin: priceMin ?? this.priceMin,
-      priceMax: priceMax ?? this.priceMax,
+      community: clearCommunity ? null : (community ?? this.community),
+      priceMin: clearPrice ? priceMin : (priceMin ?? this.priceMin),
+      priceMax: clearPrice ? priceMax : (priceMax ?? this.priceMax),
       beds: clearBeds ? null : (beds ?? this.beds),
       baths: clearBaths ? null : (baths ?? this.baths),
-      buaMin: buaMin ?? this.buaMin,
-      buaMax: buaMax ?? this.buaMax,
-      furnishing: furnishing ?? this.furnishing,
+      buaMin: clearBua ? buaMin : (buaMin ?? this.buaMin),
+      buaMax: clearBua ? buaMax : (buaMax ?? this.buaMax),
+      furnishing: clearFurnishing ? null : (furnishing ?? this.furnishing),
       amenities: amenities ?? this.amenities,
       verifiedOnly: verifiedOnly ?? this.verifiedOnly,
       sort: sort ?? this.sort,
@@ -144,14 +148,27 @@ class SearchQuery {
     final typeTitle = PropertyCategory.titleForWire(propertyType);
     if (typeTitle != null) chips.add(typeTitle);
     if (priceMin != null || priceMax != null) {
-      final lo = priceMin == null ? '' : '${(priceMin! / 1000).round()}';
-      final hi = priceMax == null ? '' : '${(priceMax! / 1000).round()}k';
-      chips.add('AED $lo–$hi');
+      String k(int v) => v >= 1000000
+          ? '${(v / 1000000).toStringAsFixed(v % 1000000 == 0 ? 0 : 1)}M'
+          : v >= 1000
+              ? '${(v / 1000).round()}k'
+              : '$v';
+      if (priceMin != null && priceMax != null) {
+        chips.add('${k(priceMin!)}–${k(priceMax!)}');
+      } else if (priceMin != null) {
+        chips.add('From ${k(priceMin!)}');
+      } else {
+        chips.add('Up to ${k(priceMax!)}');
+      }
     }
     if (beds != null) chips.add('$beds Beds');
     if (baths != null) chips.add('$baths Baths');
     if (buaMin != null || buaMax != null) {
-      chips.add('${buaMin ?? 0}–${buaMax ?? '∞'} sqft');
+      chips.add(buaMin != null && buaMax != null
+          ? '${formatThousands(buaMin!)}–${formatThousands(buaMax!)} sqft'
+          : buaMin != null
+              ? '${formatThousands(buaMin!)}+ sqft'
+              : 'Up to ${formatThousands(buaMax!)} sqft');
     }
     if (furnishing != null && furnishing != 'Any') chips.add(furnishing!);
     for (final a in amenities) {
@@ -282,11 +299,16 @@ class ListingPage {
   final int page;
   final bool hasMore;
 
+  /// Same search under the other purpose (rent ↔ sale). Lets the results
+  /// screen switch instead of showing "No results".
+  final int otherTotal;
+
   const ListingPage({
     required this.results,
     required this.total,
     this.page = 1,
     this.hasMore = false,
+    this.otherTotal = 0,
   });
 
   factory ListingPage.fromJson(Map<String, dynamic> json) {
@@ -301,6 +323,7 @@ class ListingPage {
       total: total,
       page: page,
       hasMore: page * pageSize < total,
+      otherTotal: (json['other_total'] as num?)?.toInt() ?? 0,
     );
   }
 

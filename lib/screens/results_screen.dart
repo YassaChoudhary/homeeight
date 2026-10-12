@@ -24,7 +24,14 @@ import 'sort_sheet.dart';
 class ResultsScreen extends StatefulWidget {
   final SearchQuery initialQuery;
 
-  const ResultsScreen({super.key, this.initialQuery = const SearchQuery()});
+  /// Open on the map instead of the list (e.g. after "Search on the map").
+  final bool initialMapMode;
+
+  const ResultsScreen({
+    super.key,
+    this.initialQuery = const SearchQuery(),
+    this.initialMapMode = false,
+  });
 
   @override
   State<ResultsScreen> createState() => _ResultsScreenState();
@@ -35,7 +42,7 @@ class _ResultsScreenState extends State<ResultsScreen> {
   final ScrollController _scroll = ScrollController();
 
   /// List or map. The query (and its results) is shared by both.
-  bool _mapMode = false;
+  late bool _mapMode = widget.initialMapMode;
 
   /// Listing to centre the map on (a card's Map button).
   String? _focusId;
@@ -43,6 +50,35 @@ class _ResultsScreenState extends State<ResultsScreen> {
   /// Last results, kept while a new search loads so the map doesn't empty
   /// out under the user's finger.
   List<Property> _lastItems = const [];
+
+  /// Every match for the map (up to [_mapLimit]), not just the pages the
+  /// list has scrolled through — so all results get a marker.
+  static const int _mapLimit = 300;
+  List<Property> _mapItems = const [];
+  SearchQuery? _mapQuery;
+  bool _mapLoading = false;
+
+  /// Fetches the map's pins when the query has changed since last time.
+  void _ensureMapPins(SearchQuery query) {
+    final key = query.copyWith(page: 1, pageSize: _mapLimit);
+    if (key == _mapQuery) return;
+    _mapQuery = key;
+    _mapLoading = true;
+    AppScope.repositoryOf(context).search(key).then((page) {
+      if (!mounted || _mapQuery != key) return;
+      setState(() {
+        _mapItems = page.results;
+        _mapLoading = false;
+      });
+    }).catchError((Object _) {
+      if (!mounted || _mapQuery != key) return;
+      // Fall back to the list's results.
+      setState(() {
+        _mapItems = _lastItems;
+        _mapLoading = false;
+      });
+    });
+  }
 
   @override
   void initState() {
@@ -117,9 +153,13 @@ class _ResultsScreenState extends State<ResultsScreen> {
       return ErrorStateView(onRetry: _controller.load);
     }
     final market = AppScope.of(context).appState.market;
+    final listLoading = state is AsyncLoading<List<Property>>;
+    // Wait for the list's query to settle (it may switch Rent ↔ Sale).
+    if (!listLoading) _ensureMapPins(query);
+    final fresh = _mapQuery == query.copyWith(page: 1, pageSize: _mapLimit);
     return ResultsMapView(
-      items: _lastItems,
-      loading: state is AsyncLoading<List<Property>>,
+      items: fresh && !_mapLoading ? _mapItems : _lastItems,
+      loading: listLoading || _mapLoading,
       activeArea: query.bounds,
       fallbackCenter: marketCenter(market.code),
       focusId: _focusId,
@@ -233,7 +273,16 @@ class _ResultsScreenState extends State<ResultsScreen> {
       cacheExtent: 800,
       itemBuilder: (context, index) {
         if (index == 0) {
-          return Padding(
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _PurposeNotice(
+                query: query,
+                switchedFrom: _controller.switchedFrom,
+                otherTotal: _controller.otherTotal,
+                onSwitch: (p) => _controller.setPurpose(p),
+              ),
+              Padding(
             padding: const EdgeInsets.only(bottom: 14),
             child: Row(
               children: [
@@ -248,7 +297,9 @@ class _ResultsScreenState extends State<ResultsScreen> {
                           style: AppTextStyles.h2(),
                         ),
                         if (query.community != null)
-                          TextSpan(text: 'in ${query.community}'),
+                          TextSpan(text: 'in ${query.community}')
+                        else if (query.term.trim().isNotEmpty)
+                          TextSpan(text: 'for "${query.term.trim()}"'),
                       ],
                     ),
                   ),
@@ -270,6 +321,8 @@ class _ResultsScreenState extends State<ResultsScreen> {
                 ),
               ],
             ),
+              ),
+            ],
           );
         }
 
@@ -559,6 +612,82 @@ class _ToggleSegment extends StatelessWidget {
             const SizedBox(width: 6),
             Text(label, style: AppTextStyles.bodyStrong(color: fg)),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Rent ↔ Sale hint above the results:
+/// * after an automatic switch: "No homes for rent match "penthouse" —
+///   showing homes for sale."
+/// * otherwise, when the other purpose also has matches: "Also 3 for sale →".
+class _PurposeNotice extends StatelessWidget {
+  final SearchQuery query;
+  final Purpose? switchedFrom;
+  final int otherTotal;
+  final ValueChanged<Purpose> onSwitch;
+
+  const _PurposeNotice({
+    required this.query,
+    required this.switchedFrom,
+    required this.otherTotal,
+    required this.onSwitch,
+  });
+
+  static String _short(Purpose p) => p == Purpose.rent ? 'for rent' : 'for sale';
+
+  @override
+  Widget build(BuildContext context) {
+    final term = query.term.trim();
+    final other = query.purpose == Purpose.rent ? Purpose.sale : Purpose.rent;
+    final from = switchedFrom;
+
+    if (from != null) {
+      return Container(
+        margin: const EdgeInsets.only(bottom: 14),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: AppColors.primaryTint,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.info_outline_rounded,
+                size: 18, color: AppColors.primary),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                term.isEmpty
+                    ? 'No homes ${_short(from)} — showing homes ${_short(query.purpose)}.'
+                    : 'No homes ${_short(from)} match "$term" — showing homes '
+                        '${_short(query.purpose)}.',
+                style: AppTextStyles.caption(color: AppColors.ink),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    if (term.isEmpty || otherTotal <= 0) return const SizedBox.shrink();
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => onSwitch(other),
+        child: Container(
+          margin: const EdgeInsets.only(bottom: 12),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+          decoration: BoxDecoration(
+            color: AppColors.primaryTint,
+            borderRadius: BorderRadius.circular(999),
+          ),
+          child: Text(
+            'Also ${formatThousands(otherTotal)} ${_short(other)} →',
+            style: AppTextStyles.caption(color: AppColors.primary)
+                .copyWith(fontWeight: FontWeight.w700),
+          ),
         ),
       ),
     );

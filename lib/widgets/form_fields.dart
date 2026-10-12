@@ -44,6 +44,7 @@ class AppTextField extends StatefulWidget {
   final List<TextInputFormatter>? formatters;
   final ValueChanged<String>? onChanged;
   final int maxLines;
+  final int? minLines;
   final int? maxLength;
 
   /// Sits inside the box on the trailing edge — the "sqft ▾" unit picker, the
@@ -53,6 +54,15 @@ class AppTextField extends StatefulWidget {
   /// Leading glyph inside the box.
   final IconData? icon;
 
+  /// Leading widget (e.g. a flag) — used instead of [icon] when set.
+  final Widget? leading;
+
+  /// Fully rounded ends, as on the post-listing screens. Multi-line fields
+  /// keep the card radius.
+  final bool pill;
+
+  final TextCapitalization textCapitalization;
+
   const AppTextField({
     super.key,
     required this.controller,
@@ -61,9 +71,13 @@ class AppTextField extends StatefulWidget {
     this.formatters,
     this.onChanged,
     this.maxLines = 1,
+    this.minLines,
     this.maxLength,
     this.trailing,
     this.icon,
+    this.leading,
+    this.pill = false,
+    this.textCapitalization = TextCapitalization.none,
   });
 
   @override
@@ -94,7 +108,8 @@ class _AppTextFieldState extends State<AppTextField> {
       padding: const EdgeInsetsDirectional.only(start: 18, end: 12),
       decoration: BoxDecoration(
         color: AppColors.surface,
-        borderRadius: BorderRadius.circular(AppRadius.md),
+        borderRadius: BorderRadius.circular(
+            widget.pill && widget.maxLines == 1 ? 999 : AppRadius.md),
         border: Border.all(
           color: _focused ? AppColors.primary : AppColors.line,
           width: _focused ? 1.8 : 1,
@@ -114,7 +129,10 @@ class _AppTextFieldState extends State<AppTextField> {
             ? CrossAxisAlignment.start
             : CrossAxisAlignment.center,
         children: [
-          if (widget.icon != null) ...[
+          if (widget.leading != null) ...[
+            widget.leading!,
+            const SizedBox(width: 12),
+          ] else if (widget.icon != null) ...[
             Padding(
               padding: EdgeInsets.only(top: widget.maxLines > 1 ? 20 : 0),
               child: Icon(widget.icon, size: 20, color: AppColors.inkMuted),
@@ -132,7 +150,9 @@ class _AppTextFieldState extends State<AppTextField> {
                 inputFormatters: widget.formatters,
                 onChanged: widget.onChanged,
                 maxLines: widget.maxLines,
+                minLines: widget.minLines,
                 maxLength: widget.maxLength,
+                textCapitalization: widget.textCapitalization,
                 style: AppTextStyles.bodyStrong().copyWith(fontSize: 16.5),
                 decoration: InputDecoration(
                   isDense: true,

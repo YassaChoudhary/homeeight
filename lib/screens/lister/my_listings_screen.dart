@@ -12,7 +12,9 @@ import '../../widgets/form_fields.dart';
 import '../../widgets/pill_button.dart';
 import '../../widgets/property_image.dart';
 import '../../widgets/state_views.dart';
-import '../post_listing/post_listing_flow.dart';
+import '../../models/lister_profile.dart';
+import 'lister_gate.dart';
+import '../property_detail_screen.dart';
 import 'listing_performance_screen.dart';
 
 /// Screen 31 — "My Listings".
@@ -53,13 +55,39 @@ class _MyListingsScreenState extends State<MyListingsScreen> {
   }
 
   Future<void> _openPostFlow({MyListing? existing}) async {
-    await Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => PostListingFlow(initialDraft: existing?.draft),
-      ),
-    );
+    // Same verification check as the + button.
+    await startListing(context, draft: existing?.draft);
     // Always reload on return: the flow may have submitted, saved a draft or
     // changed nothing, and guessing which is how a stale row ends up on screen.
+    if (mounted) _listings.load();
+  }
+
+  /// The listing page as buyers see it. A live listing opens the real page;
+  /// anything not public yet (draft, in review, rejected) opens a preview
+  /// built from the saved listing.
+  Future<void> _openDetails(MyListing listing) async {
+    final user = AppScope.authOf(context).user;
+    final profile = user?.listerProfile;
+    final agency = (profile?.organisation.isNotEmpty ?? false)
+        ? profile!.organisation
+        : ((profile?.type ?? ListerType.individual) == ListerType.individual
+            ? 'Property owner'
+            : '');
+    final preview = listing.draft.toPreviewProperty(
+      agentName: user?.name ?? '',
+      agency: agency,
+      avatarUrl: user?.avatarUrl,
+    );
+    final isLive = listing.status == ListingStatus.live;
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => PropertyDetailScreen(
+          propertyId: listing.id,
+          preloaded: preview,
+          previewOnly: !isLive,
+        ),
+      ),
+    );
     if (mounted) _listings.load();
   }
 
@@ -70,6 +98,21 @@ class _MyListingsScreenState extends State<MyListingsScreen> {
       ),
     );
     if (mounted) _listings.load();
+  }
+
+  void _showError(Object e) {
+    final message = e is RepositoryException
+        ? e.message
+        : 'Something went wrong. Try again.';
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(message),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: AppColors.navDark,
+        ),
+      );
   }
 
   void _notYet(String what) {
@@ -171,13 +214,13 @@ class _MyListingsScreenState extends State<MyListingsScreen> {
         ..hideCurrentSnackBar()
         ..showSnackBar(
           const SnackBar(
-            content: Text('Boost applied — featured placement is live.'),
+            content: Text("Boost requested — we'll contact you to set it up."),
             behavior: SnackBarBehavior.floating,
             backgroundColor: AppColors.navDark,
           ),
         );
-    } catch (_) {
-      if (mounted) _notYet('Boosting');
+    } catch (e) {
+      if (mounted) _showError(e);
     }
   }
 
@@ -232,8 +275,8 @@ class _MyListingsScreenState extends State<MyListingsScreen> {
     try {
       await AppScope.repositoryOf(context).deleteListing(listing.id);
       if (mounted) _listings.load();
-    } catch (_) {
-      if (mounted) _notYet('Deleting');
+    } catch (e) {
+      if (mounted) _showError(e);
     }
   }
 
@@ -250,7 +293,11 @@ class _MyListingsScreenState extends State<MyListingsScreen> {
 
           return Column(
             children: [
-              _StatsHeader(listings: all, loading: _listings.state.isLoading),
+              _StatsHeader(
+                listings: all,
+                loading: _listings.state.isLoading,
+                onFilter: (f) => setState(() => _filter = f),
+              ),
               const SizedBox(height: 16),
               SizedBox(
                 height: 48,
@@ -328,9 +375,7 @@ class _MyListingsScreenState extends State<MyListingsScreen> {
                             onBoost: () => _boost(visible[i]),
                             onContinue: () =>
                                 _openPostFlow(existing: visible[i]),
-                            onTap: () => visible[i].hasMetrics
-                                ? _openPerformance(visible[i])
-                                : _openPostFlow(existing: visible[i]),
+                            onTap: () => _openDetails(visible[i]),
                           ),
                         ),
                 ),
@@ -343,21 +388,25 @@ class _MyListingsScreenState extends State<MyListingsScreen> {
   }
 }
 
-/// Dark rounded header with the three portfolio figures.
+/// Dark rounded header: how many listings are in review, approved (live)
+/// and rejected. Tapping a figure shows those listings.
 class _StatsHeader extends StatelessWidget {
   final List<MyListing> listings;
   final bool loading;
+  final ValueChanged<ListingFilter> onFilter;
 
-  const _StatsHeader({required this.listings, required this.loading});
+  const _StatsHeader({
+    required this.listings,
+    required this.loading,
+    required this.onFilter,
+  });
+
+  int _count(ListingStatus status) =>
+      listings.where((l) => l.status == status).length;
 
   @override
   Widget build(BuildContext context) {
     final topInset = MediaQuery.paddingOf(context).top;
-    final views = listings.fold<int>(0, (sum, l) => sum + l.views);
-    final enquiries = listings.fold<int>(0, (sum, l) => sum + l.enquiries);
-    final viewings = listings
-        .where((l) => l.status == ListingStatus.live)
-        .fold<int>(0, (sum, l) => sum + (l.enquiries ~/ 7));
 
     return Container(
       padding: EdgeInsets.only(top: topInset + 4, bottom: 22),
@@ -400,32 +449,31 @@ class _StatsHeader extends StatelessWidget {
               children: [
                 Expanded(
                   child: _StatTile(
-                    value: formatCountish(views),
-                    label: 'Views',
-                    sub: '30d',
-                    changePct: 18,
-                    loading: loading,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: _StatTile(
-                    value: '$enquiries',
-                    label: 'Enquiries',
-                    changePct: 9,
-                    loading: loading,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: _StatTile(
-                    value: '$viewings',
-                    label: 'Viewings',
-                    sub: 'this week',
-                    // The design shows this one in amber with no delta — it's
-                    // a count of upcoming appointments, not a trend.
+                    value: '${_count(ListingStatus.inReview)}',
+                    label: 'In review',
                     valueColor: AppColors.amber,
                     loading: loading,
+                    onTap: () => onFilter(ListingFilter.inReview),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _StatTile(
+                    value: '${_count(ListingStatus.live)}',
+                    label: 'Approved',
+                    valueColor: AppColors.primaryOnDark,
+                    loading: loading,
+                    onTap: () => onFilter(ListingFilter.live),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _StatTile(
+                    value: '${_count(ListingStatus.rejected)}',
+                    label: 'Rejected',
+                    valueColor: const Color(0xFFFF8A80),
+                    loading: loading,
+                    onTap: () => onFilter(ListingFilter.rejected),
                   ),
                 ),
               ],
@@ -437,66 +485,57 @@ class _StatsHeader extends StatelessWidget {
   }
 }
 
-/// "1,284 / Views · 30d / ▲18%".
+/// One figure in the header: big number, label under it.
 class _StatTile extends StatelessWidget {
   final String value;
   final String label;
-  final String? sub;
-  final double? changePct;
   final Color valueColor;
   final bool loading;
+  final VoidCallback onTap;
 
   const _StatTile({
     required this.value,
     required this.label,
-    this.sub,
-    this.changePct,
+    required this.onTap,
     this.valueColor = Colors.white,
     this.loading = false,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      height: 92,
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(AppRadius.md),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          if (loading)
-            const SkeletonBox(height: 22, width: 54)
-          else
+    return Pressable(
+      onTap: onTap,
+      child: Container(
+        height: 84,
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(AppRadius.md),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            if (loading)
+              const SkeletonBox(height: 24, width: 40)
+            else
+              Text(
+                value,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: AppTextStyles.display(color: valueColor)
+                    .copyWith(fontSize: 24),
+              ),
+            const SizedBox(height: 4),
             Text(
-              value,
+              label,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: AppTextStyles.display(color: valueColor)
-                  .copyWith(fontSize: 21),
+              style: AppTextStyles.caption(color: Colors.white70)
+                  .copyWith(fontSize: 13),
             ),
-          const SizedBox(height: 4),
-          Text(
-            label,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: AppTextStyles.caption(color: Colors.white70)
-                .copyWith(fontSize: 12.5),
-          ),
-          if (sub != null)
-            Text(
-              sub!,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: AppTextStyles.micro(color: Colors.white38)
-                  .copyWith(fontSize: 11, fontWeight: FontWeight.w400),
-            ),
-          if (changePct != null && !loading)
-            TrendPill(changePct: changePct, compact: true),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -591,6 +630,7 @@ class _ListingRow extends StatelessWidget {
                   height: 84,
                   child: PropertyImage(
                     seed: listing.draft.gradientSeed,
+                    url: listing.draft.coverUrl,
                     borderRadius: BorderRadius.circular(AppRadius.sm),
                     decodeWidth: 96,
                     child: PositionedDirectional(
@@ -669,13 +709,6 @@ class _ListingRow extends StatelessWidget {
                           ],
                         ),
                       ],
-                      if (listing.status == ListingStatus.inReview) ...[
-                        const SizedBox(height: 9),
-                        _ReviewProgress(
-                          progress: listing.reviewProgress,
-                          stage: listing.reviewStage,
-                        ),
-                      ],
                       if (listing.status == ListingStatus.draft) ...[
                         const SizedBox(height: 10),
                         Pressable(
@@ -745,36 +778,6 @@ class _ListingRow extends StatelessWidget {
           ],
         ),
       ),
-    );
-  }
-}
-
-class _ReviewProgress extends StatelessWidget {
-  final double progress;
-  final String stage;
-
-  const _ReviewProgress({required this.progress, required this.stage});
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Expanded(
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(999),
-            child: LinearProgressIndicator(
-              value: progress.clamp(0.0, 1.0),
-              minHeight: 5,
-              backgroundColor: AppColors.line,
-              valueColor: const AlwaysStoppedAnimation<Color>(AppColors.amber),
-            ),
-          ),
-        ),
-        const SizedBox(width: 12),
-        Text(stage,
-            style: AppTextStyles.caption(color: AppColors.warning)
-                .copyWith(fontWeight: FontWeight.w600)),
-      ],
     );
   }
 }
