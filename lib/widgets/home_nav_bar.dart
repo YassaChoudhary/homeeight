@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
+import '../data/chat_service.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text_styles.dart';
 
@@ -87,19 +88,16 @@ class HomeNavBar extends StatelessWidget {
   /// leaves the selected tab untouched.
   final VoidCallback? onPost;
 
-  /// Unread chat count. Zero hides the badge entirely.
-  ///
-  /// Defaults to 0 because there is no chat backend — a hardcoded number reads
-  /// as real unread messages sitting behind a screen that doesn't exist. Wire
-  /// this to the real count when messaging lands.
-  final int chatBadge;
+  /// Unread chat count override. Null (the default) follows the live
+  /// unread total from [ChatUnread]. Zero hides the badge.
+  final int? chatBadge;
 
   const HomeNavBar({
     super.key,
     required this.current,
     required this.onTap,
     this.onPost,
-    this.chatBadge = 0,
+    this.chatBadge,
   });
 
   @override
@@ -152,12 +150,15 @@ class HomeNavBar extends StatelessWidget {
                       active: current == NavTab.search,
                       onTap: () => onTap(NavTab.search),
                     ),
-                    _NavItem(
-                      label: 'Chats',
-                      icon: NavIcons.chats,
-                      active: current == NavTab.chats,
-                      badge: chatBadge,
-                      onTap: () => onTap(NavTab.chats),
+                    ValueListenableBuilder<int>(
+                      valueListenable: ChatUnread.instance,
+                      builder: (context, unread, _) => _NavItem(
+                        label: 'Chats',
+                        icon: NavIcons.chats,
+                        active: current == NavTab.chats,
+                        badge: chatBadge ?? unread,
+                        onTap: () => onTap(NavTab.chats),
+                      ),
                     ),
                   ],
                 ),

@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 
+import '../core/async_value.dart';
+import '../data/listing_repository.dart';
 import '../state/app_scope.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_spacing.dart';
 import '../theme/app_text_styles.dart';
+import '../widgets/media_picker.dart';
 import '../widgets/pill_button.dart';
 import 'profile_screen.dart';
 
@@ -25,6 +28,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   late final TextEditingController _phone;
   late final TextEditingController _email;
   bool _dirty = false;
+  bool _uploadingPhoto = false;
 
   @override
   void initState() {
@@ -48,11 +52,16 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   }
 
   void _save() {
+    final name = _name.text.trim();
     AppScope.authOf(context).updateProfile(
-      name: _name.text.trim(),
+      name: name,
       phone: _phone.text.trim(),
       email: _email.text.trim(),
     );
+    // Keep the public seller card (listings, chats) in step. Best-effort.
+    AppScope.repositoryOf(context)
+        .updatePublicProfile(name: name)
+        .catchError((Object e) => debugPrint('Public profile sync: $e'));
     Navigator.of(context).maybePop();
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
@@ -61,6 +70,50 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         backgroundColor: AppColors.navDark,
       ),
     );
+  }
+
+  /// Pick (camera or gallery) → upload → save on the account. The new
+  /// photo shows straight away and is kept across sign-ins.
+  Future<void> _changePhoto() async {
+    if (_uploadingPhoto) return;
+    final auth = AppScope.authOf(context);
+    final repo = AppScope.repositoryOf(context);
+    final messenger = ScaffoldMessenger.of(context);
+    void say(String text) => messenger
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(
+        content: Text(text),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: AppColors.navDark,
+      ));
+
+    final file = await MediaPicker.photo(context, preferFront: true);
+    if (file == null || !mounted) return;
+    setState(() => _uploadingPhoto = true);
+    try {
+      final doc = await repo.uploadListingFile(
+        kind: ListingFileKind.photo,
+        bytes: file.bytes,
+        fileName: file.name,
+        contentType: file.mimeType,
+      );
+      final url = doc.remoteUrl;
+      if (url == null || url.isEmpty) {
+        throw const RepositoryException("Couldn't upload the photo.");
+      }
+      auth.updateProfile(avatarUrl: url);
+      repo
+          .updatePublicProfile(avatarUrl: url)
+          .catchError((Object e) => debugPrint('Public profile sync: $e'));
+      say('Profile photo updated');
+    } on RepositoryException catch (e) {
+      say(e.message);
+    } catch (e) {
+      debugPrint('Photo upload failed: $e');
+      say("Couldn't upload the photo. Check your connection and try again.");
+    } finally {
+      if (mounted) setState(() => _uploadingPhoto = false);
+    }
   }
 
   void _notYet(String what) {
@@ -136,19 +189,48 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                       Center(
                         child: Column(
                           children: [
-                            ProfileAvatar(
-                              user: user,
-                              size: 108,
-                              badge: _CameraBadge(
-                                onTap: () => _notYet('Photo upload'),
-                              ),
+                            Stack(
+                              alignment: Alignment.center,
+                              children: [
+                                GestureDetector(
+                                  behavior: HitTestBehavior.opaque,
+                                  onTap: _changePhoto,
+                                  child: ProfileAvatar(
+                                    user: user,
+                                    size: 108,
+                                    badge: _CameraBadge(onTap: _changePhoto),
+                                  ),
+                                ),
+                                if (_uploadingPhoto)
+                                  IgnorePointer(
+                                    child: Container(
+                                      width: 108,
+                                      height: 108,
+                                      decoration: BoxDecoration(
+                                        color: Colors.black.withValues(alpha: 0.35),
+                                        shape: BoxShape.circle,
+                                      ),
+                                      alignment: Alignment.center,
+                                      child: const SizedBox(
+                                        width: 28,
+                                        height: 28,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2.6,
+                                          valueColor:
+                                              AlwaysStoppedAnimation<Color>(
+                                                  Colors.white),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                              ],
                             ),
                             const SizedBox(height: 12),
                             GestureDetector(
                               behavior: HitTestBehavior.opaque,
-                              onTap: () => _notYet('Photo upload'),
+                              onTap: _uploadingPhoto ? null : _changePhoto,
                               child: Text(
-                                'Change photo',
+                                _uploadingPhoto ? 'Uploading…' : 'Change photo',
                                 style: AppTextStyles.bodyStrong(
                                     color: AppColors.primary),
                               ),
@@ -167,8 +249,12 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                         label: 'Phone',
                         controller: _phone,
                         keyboardType: TextInputType.phone,
-                        onChanged: (_) => _markDirty(),
-                        trailing: user.phoneVerified
+                        onChanged: (_) => setState(() => _dirty = true),
+                        // No chip on an empty number — "Verified" next to
+                        // nothing reads as a bug.
+                        trailing: _phone.text.trim().isEmpty
+                            ? null
+                            : user.phoneVerified
                             ? const _StatusChip(
                                 label: 'Verified',
                                 bg: Color(0xFFE7F4EC),

@@ -8,8 +8,8 @@ select pg_temp.check('highlights no purpose: 7', (select jsonb_array_length(publ
 select pg_temp.check('highlights named args like the app sends', (select jsonb_array_length(public.highlight_listings(p_limit => 8, p_market => 'AE', p_purpose => 'sale')) = 2));
 select pg_temp.check('communities rent: Dubai Marina (2) first, counts rent only',
   (select c->0->>'name' = 'Dubai Marina' and (c->0->>'homes')::int = 2 and jsonb_array_length(c) = 4 from (select public.popular_communities(4, 'AE', 'rent') c) x));
-select pg_temp.check('communities sale: Bluewaters & Business Bay first (1 each)',
-  (select (c->0->>'name') in ('Bluewaters','Business Bay') and (c->1->>'name') in ('Bluewaters','Business Bay') and (c->0->>'homes')::int = 1 and (c->2->>'homes')::int = 0 from (select public.popular_communities(4, 'AE', 'sale') c) x));
+select pg_temp.check('communities sale: only Bluewaters & Business Bay (1 each), no 0-home tiles',
+  (select jsonb_array_length(c) = 2 and (c->0->>'name') in ('Bluewaters','Business Bay') and (c->1->>'name') in ('Bluewaters','Business Bay') and (c->1->>'homes')::int = 1 from (select public.popular_communities(4, 'AE', 'sale') c) x));
 select pg_temp.check('communities no purpose: popular 4, same as before',
   (select jsonb_array_length(c) = 4 and c->0->>'name' = 'Dubai Marina' from (select public.popular_communities(4) c) x));
 select pg_temp.check('null purpose explicit = no filter', (select jsonb_array_length(public.highlight_listings(p_limit => 8, p_market => 'AE', p_purpose => null)) = 7));

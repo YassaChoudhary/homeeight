@@ -125,5 +125,6 @@ do $$ begin
     grant execute on function public.otp_rate_check(text) to service_role;
     grant execute on function public.otp_store(text, text) to service_role;
     grant execute on function public.otp_verify(text, text) to service_role;
+    grant select, insert, update, delete on public.email_otps to service_role;
   end if;
 end $$;

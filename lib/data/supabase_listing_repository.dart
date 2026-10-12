@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../core/async_value.dart';
+import '../models/agent_profile.dart';
 import '../models/lister_profile.dart';
 import '../models/listing_draft.dart';
 import '../models/my_listing.dart';
@@ -296,6 +297,23 @@ class SupabaseListingRepository implements ListingRepository {
         ? VerificationStatus.parse(data['status'] as String?)
         : VerificationStatus.pending;
     return profile.copyWith(status: status, reviewNote: '');
+  }
+
+  @override
+  Future<void> updatePublicProfile({String? name, String? avatarUrl}) async {
+    await _rpc(
+      'update_my_public_profile',
+      {'p_name': name, 'p_avatar_url': avatarUrl},
+      client: _client,
+    );
+  }
+
+  @override
+  Future<AgentProfile?> agentProfile(String agentId) async {
+    final data =
+        await _rpc('agent_profile', {'p_agent_id': agentId}, client: _client);
+    if (data is! Map) return null;
+    return AgentProfile.fromJson(_asMap(data));
   }
 
   @override

@@ -492,3 +492,20 @@ grant execute on function
   public.suggest_places(text, text),
   public.reels_feed(int)
 to anon, authenticated;
+
+-- =============================================================================
+-- Table permissions. New Supabase projects don't grant these automatically
+-- for tables created in SQL, and without them every request fails with
+-- "42501 permission denied for table …". RLS (above) still decides which
+-- ROWS each caller sees — these only open the door to the table at all.
+-- =============================================================================
+grant usage on schema public to anon, authenticated;
+
+grant select on public.agents, public.listings, public.places, public.reels
+  to anon, authenticated;
+
+grant insert, update, delete on public.listings to authenticated;
+grant select, insert, delete on public.saved_listings to authenticated;
+-- The reels feed checks "is this saved?" for whoever is asking, so anon needs
+-- to be able to look at saved_listings too. RLS gives anon zero rows.
+grant select on public.saved_listings to anon;

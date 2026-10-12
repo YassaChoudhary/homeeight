@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:video_player/video_player.dart';
 
 import '../data/listing_repository.dart';
-
 import '../models/property.dart';
 import '../state/app_scope.dart';
 import '../state/listings_controller.dart';
@@ -13,10 +13,12 @@ import '../theme/app_spacing.dart';
 import '../theme/app_text_styles.dart';
 import '../widgets/app_icons.dart';
 import '../widgets/home8_map.dart';
+import '../widgets/home_nav_bar.dart';
 import '../widgets/listing_card.dart';
 import '../widgets/pill_button.dart';
 import '../widgets/property_image.dart';
 import '../widgets/state_views.dart';
+import 'chat/chat_launcher.dart';
 import 'fair_price_sheet.dart';
 import 'gallery_screen.dart';
 import 'map/property_map_screen.dart';
@@ -403,7 +405,11 @@ class _PropertyDetailScreenState extends State<PropertyDetailScreen> {
                   ],
                 ),
                 const SizedBox(height: 20),
-                _AgentCard(agent: p.agent),
+                _AgentCard(
+                  agent: p.agent,
+                  property: p,
+                  enabled: !widget.previewOnly,
+                ),
                 if (p.amenities.isNotEmpty) ...[
                   const SizedBox(height: 26),
                   Text('What this place offers', style: AppTextStyles.h1()),
@@ -702,11 +708,21 @@ class _PriceBlock extends StatelessWidget {
 
 class _AgentCard extends StatelessWidget {
   final Agent agent;
-  const _AgentCard({required this.agent});
+  final Property property;
+  final bool enabled;
+  const _AgentCard({
+    required this.agent,
+    required this.property,
+    required this.enabled,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return Container(
+    final canOpen = enabled && agent.id.isNotEmpty;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: canOpen ? () => openAgentProfile(context, agent) : null,
+      child: Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
         border: Border.all(color: AppColors.line),
@@ -762,8 +778,51 @@ class _AgentCard extends StatelessWidget {
               ],
             ),
           ),
-          const Icon(Icons.chevron_right_rounded, color: AppColors.inkMuted),
+          if (canOpen) ...[
+            const SizedBox(width: 8),
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => startChat(
+                context,
+                agentId: agent.id,
+                listing: property,
+              ),
+              child: Container(
+                height: 38,
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                decoration: BoxDecoration(
+                  color: AppColors.primary,
+                  borderRadius: BorderRadius.circular(999),
+                  boxShadow: [
+                    BoxShadow(
+                      color: AppColors.primary.withValues(alpha: 0.28),
+                      blurRadius: 14,
+                      offset: const Offset(0, 5),
+                    ),
+                  ],
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SvgPicture.asset(
+                      NavIcons.chats,
+                      width: 15,
+                      height: 15,
+                      colorFilter: const ColorFilter.mode(
+                          Colors.white, BlendMode.srcIn),
+                    ),
+                    const SizedBox(width: 7),
+                    Text('Chat',
+                        style: AppTextStyles.bodyStrong(color: Colors.white)
+                            .copyWith(fontSize: 14)),
+                  ],
+                ),
+              ),
+            ),
+          ] else
+            const Icon(Icons.chevron_right_rounded, color: AppColors.inkMuted),
         ],
+      ),
       ),
     );
   }
@@ -1141,48 +1200,85 @@ class _ContactBar extends StatelessWidget {
 
   const _ContactBar({required this.property, required this.enabled});
 
+  /// Opens the phone / mail / WhatsApp app. Works in preview too (only
+  /// the tap isn't counted), and never fails silently: when there's no app
+  /// for it (e.g. an emulator with no dialer) the number or address is
+  /// copied instead.
   Future<void> _open(BuildContext context, ListingEvent kind) async {
     final p = property;
-    if (p == null || !enabled) return;
+    if (p == null) return;
+    final messenger = ScaffoldMessenger.of(context);
+    void say(String text) => messenger
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(
+        content: Text(text),
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: AppColors.navDark,
+      ));
+
     final c = p.contact;
-    final Uri? uri = switch (kind) {
-      ListingEvent.email => c.email == null
-          ? null
-          : Uri(
-              scheme: 'mailto',
-              path: c.email,
-              query: 'subject=${Uri.encodeComponent('Home8: ${p.title}')}',
-            ),
-      ListingEvent.call =>
-        c.phone == null ? null : Uri(scheme: 'tel', path: c.phone),
-      ListingEvent.whatsapp => (c.whatsapp ?? c.phone) == null
-          ? null
-          : Uri.parse('https://wa.me/'
-              '${(c.whatsapp ?? c.phone)!.replaceAll(RegExp(r'[^0-9]'), '')}'
-              '?text=${Uri.encodeComponent('Hi, I saw "${p.title}" on Home8. Is it still available?')}'),
+    final phone = _dialable(c.phone);
+    final whatsapp = _dialable(c.whatsapp) ?? phone;
+    final email = c.email?.trim();
+
+    final String? value = switch (kind) {
+      ListingEvent.call => phone,
+      ListingEvent.whatsapp => whatsapp,
+      ListingEvent.email => (email == null || email.isEmpty) ? null : email,
       ListingEvent.view => null,
     };
-    if (uri == null) {
-      ScaffoldMessenger.of(context)
-        ..hideCurrentSnackBar()
-        ..showSnackBar(const SnackBar(
-          content: Text("The lister hasn't shared this contact option."),
-          behavior: SnackBarBehavior.floating,
-          backgroundColor: AppColors.navDark,
-        ));
+    if (value == null) {
+      say(switch (kind) {
+        ListingEvent.email => "The lister didn't add an email. Try Call or WhatsApp.",
+        ListingEvent.whatsapp => "The lister didn't add a WhatsApp number.",
+        _ => "The lister didn't add a phone number.",
+      });
       return;
     }
-    AppScope.repositoryOf(context).recordListingEvent(p.id, kind);
-    final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
-    if (!ok && context.mounted) {
-      ScaffoldMessenger.of(context)
-        ..hideCurrentSnackBar()
-        ..showSnackBar(const SnackBar(
-          content: Text("Couldn't open an app for that on this phone."),
-          behavior: SnackBarBehavior.floating,
-          backgroundColor: AppColors.navDark,
-        ));
+
+    final Uri uri = switch (kind) {
+      ListingEvent.email => Uri(
+          scheme: 'mailto',
+          path: value,
+          query: 'subject=${Uri.encodeComponent('Home8: ${p.title}')}',
+        ),
+      ListingEvent.whatsapp => Uri.parse(
+          'https://wa.me/${value.replaceAll(RegExp(r'[^0-9]'), '')}'
+          '?text=${Uri.encodeComponent('Hi, I saw "${p.title}" on Home8. Is it still available?')}'),
+      _ => Uri(scheme: 'tel', path: value),
+    };
+
+    if (enabled) {
+      AppScope.repositoryOf(context).recordListingEvent(p.id, kind);
     }
+
+    var opened = false;
+    try {
+      opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      // WhatsApp not installed: open wa.me in the browser instead.
+      if (!opened && kind == ListingEvent.whatsapp) {
+        opened = await launchUrl(uri, mode: LaunchMode.platformDefault);
+      }
+    } catch (e) {
+      debugPrint('Contact launch failed ($kind): $e');
+    }
+    if (opened) return;
+
+    await Clipboard.setData(ClipboardData(text: value));
+    say(switch (kind) {
+      ListingEvent.email => 'No email app on this phone — address copied: $value',
+      ListingEvent.whatsapp => "Couldn't open WhatsApp — number copied: $value",
+      _ => 'No phone app on this device — number copied: $value',
+    });
+  }
+
+  /// "+971 50 123 4567" → "+971501234567"; null when too short to dial.
+  static String? _dialable(String? raw) {
+    if (raw == null) return null;
+    final cleaned = raw.trim().replaceAll(RegExp(r'[^0-9+]'), '');
+    final digits = cleaned.replaceAll('+', '');
+    if (digits.length < 7) return null;
+    return cleaned.startsWith('+') ? '+$digits' : digits;
   }
 
   @override

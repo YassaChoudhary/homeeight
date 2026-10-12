@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../state/app_scope.dart';
 import '../widgets/home_nav_bar.dart';
+import 'chat/chats_screen.dart';
 import 'coming_soon_screen.dart';
 import 'login_screen.dart';
 import 'profile_screen.dart';
@@ -40,33 +41,16 @@ class _MainShellState extends State<MainShell> {
     NavTab.discover,
     NavTab.reels,
     NavTab.search,
+    NavTab.chats,
     NavTab.profile,
   ];
 
   void switchTab(NavTab tab) {
-    switch (tab) {
-      case NavTab.chats:
-        Navigator.of(context).push(
-          MaterialPageRoute(
-            builder: (_) => const ComingSoonScreen(
-              title: 'Chats are under progress',
-              message:
-                  'Messaging agents from inside the app is still being built. '
-                  'For now, use the Email, Call or WhatsApp buttons on any '
-                  'listing to reach the agent directly.',
-            ),
-          ),
-        );
-      case NavTab.discover:
-      case NavTab.reels:
-      case NavTab.search:
-      case NavTab.profile:
-        if (_tab == tab) return;
-        setState(() {
-          _tab = tab;
-          _visited.add(tab);
-        });
-    }
+    if (_tab == tab) return;
+    setState(() {
+      _tab = tab;
+      _visited.add(tab);
+    });
   }
 
   /// The raised centre `+`. An action rather than a destination: it opens over
@@ -79,6 +63,7 @@ class _MainShellState extends State<MainShell> {
     return switch (tab) {
       NavTab.reels => ReelsScreen(onNavTap: switchTab),
       NavTab.search => SearchScreen(onNavTap: switchTab),
+      NavTab.chats => ChatsScreen(onNavTap: switchTab),
       NavTab.profile => _ProfileTab(onNavTap: switchTab),
       _ => HomeScreen(onNavTap: switchTab),
     };

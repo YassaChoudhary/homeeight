@@ -5,15 +5,63 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    function signedIn() {
+      return request.auth != null;
+    }
+
     // users/{uid} — one record per account, written by the app on sign-up.
     // Only the signed-in owner can read or change their own record.
     match /users/{userId} {
-      allow read, create, update: if request.auth != null
-                                  && request.auth.uid == userId;
+      allow read, create, update: if signedIn() && request.auth.uid == userId;
       allow delete: if false;
     }
 
-    // Everything else is closed until we add rules for it (listings, etc.).
+    // presence/{uid} — "Online now" / "Last seen". Anyone signed in can
+    // read; only you can write your own.
+    match /presence/{userId} {
+      allow read: if signedIn();
+      allow write: if signedIn() && request.auth.uid == userId
+                   && request.resource.data.keys().hasOnly(['online', 'lastSeen']);
+    }
+
+    // conversations/{id} — only the two members can see or change a chat.
+    match /conversations/{conversationId} {
+      function isMember(data) {
+        return signedIn() && request.auth.uid in data.members;
+      }
+
+      // `get` of a chat that doesn't exist yet is allowed so the app can
+      // check before creating it. Ids contain both members' uids.
+      allow get: if signedIn()
+                 && (resource == null || request.auth.uid in resource.data.members);
+      allow list: if isMember(resource.data);
+
+      allow create: if signedIn()
+                    && request.resource.data.members is list
+                    && request.resource.data.members.size() == 2
+                    && request.auth.uid in request.resource.data.members
+                    && conversationId.matches('.*' + request.auth.uid + '.*');
+
+      // Members can update, but never change who the members are.
+      allow update: if isMember(resource.data)
+                    && request.resource.data.members == resource.data.members;
+
+      allow delete: if false;
+
+      // Messages: members read; you can only post as yourself; no edits.
+      match /messages/{messageId} {
+        allow read: if signedIn() && request.auth.uid in
+          get(/databases/$(database)/documents/conversations/$(conversationId)).data.members;
+        allow create: if signedIn()
+          && request.resource.data.sender == request.auth.uid
+          && request.auth.uid in
+             getAfter(/databases/$(database)/documents/conversations/$(conversationId)).data.members
+          && (request.resource.data.text is string && request.resource.data.text.size() <= 4000);
+        allow update, delete: if false;
+      }
+    }
+
+    // Everything else stays closed.
     match /{document=**} {
       allow read, write: if false;
     }

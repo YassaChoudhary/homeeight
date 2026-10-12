@@ -54,7 +54,7 @@ select pg_temp.check('pages do not overlap',
      select jsonb_array_elements(public.search_listings(jsonb_build_object('purpose','rent','page',n::text,'page_size','2','sort','price_asc'))->'results')->>'id' id
      from generate_series(1,3) n) z));
 select pg_temp.check('no results -> empty array',
-  (select public.search_listings('{"purpose":"rent","q":"zzzz"}') = '{"page": 1, "total": 0, "results": [], "page_size": 20}'::jsonb));
+  (select public.search_listings('{"purpose":"rent","q":"zzzz"}') = '{"page": 1, "total": 0, "other_total": 0, "results": [], "page_size": 20}'::jsonb));
 select pg_temp.check('card JSON has agent object + badges',
   (select j->'agent'->>'name' = 'Tarik Abdullah' and j->'badges' ? 'guest_favourite' and j->'fair_price'->>'verdict' = 'fair'
    from (select public.listing_by_id('p1') j) x));
@@ -68,7 +68,7 @@ select pg_temp.check('popular communities: 4, Dubai Marina has 2 homes',
   (select jsonb_array_length(c) = 4 and c->0->>'name' = 'Dubai Marina' and (c->0->>'homes')::int = 2
    from (select public.popular_communities(4) c) x));
 select pg_temp.check('suggest "mar": Dubai Marina + towers',
-  (select jsonb_array_length(s) = 3 and s->0->>'title' = 'Marina Gate Tower' from (select public.suggest_places('mar') s) x));
+  (select s->0->>'title' = 'Dubai Marina' and s::text like '%Marina Gate Tower%' and s::text like '%"l:p5"%' from (select public.suggest_places('mar') s) x));
 select pg_temp.check('suggest empty -> []', (select public.suggest_places('  ') = '[]'::jsonb));
 select pg_temp.check('reels feed: 5, saved false for anon',
   (select jsonb_array_length(r) = 5 and r->0->>'saved' = 'false' and r->0->'agent'->>'name' is not null from (select public.reels_feed() r) x));

@@ -19,6 +19,45 @@ insert into t values ('d1', public.save_listing('{"purpose":"rent","segment":"re
 select pg_temp.check('draft saved with id', (select (v->>'id') like 'l_%' and v->>'status' = 'draft' from t where k='d1'));
 select pg_temp.check('draft knows what is missing (no type)', (select v->'draft'->>'type' is null from t where k='d1'));
 
+-- ---------- account verification gate ----------
+select pg_temp.check('never verified -> none', (select public.my_verification()->>'status' = 'none'));
+do $$ begin
+  perform public.submit_listing('{"purpose":"rent"}');
+  raise exception 'FAIL: unverified account published';
+exception when raise_exception then
+  if sqlerrm not like '%still being verified%' then raise exception 'FAIL: wrong message %', sqlerrm; end if;
+  raise notice 'ok - unverified account cannot publish';
+end $$;
+do $$ begin
+  perform public.submit_verification('{"type":"individual","legal_name":"Sara Owner"}');
+  raise exception 'FAIL: verification without ID accepted';
+exception when raise_exception then raise notice 'ok - individual needs ID front and back';
+end $$;
+select pg_temp.check('individual verification submitted', (select public.submit_verification(
+  '{"type":"individual","legal_name":"Sara Owner","id_front":{"name":"f.jpg","bytes":5,"path":"sellerA/docs/vf.jpg"},"id_back":{"name":"b.jpg","bytes":5,"path":"sellerA/docs/vb.jpg"}}')->>'status' = 'pending'));
+select pg_temp.check('pending', (select public.my_verification()->>'status' = 'pending' and public.my_verification()->>'type' = 'individual'));
+select pg_temp.check('resubmitting while pending updates, not duplicates', (select public.submit_verification(
+  '{"type":"individual","legal_name":"Sara A. Owner","id_front":{"name":"f.jpg","bytes":5,"path":"sellerA/docs/vf.jpg"},"id_back":{"name":"b.jpg","bytes":5,"path":"sellerA/docs/vb.jpg"}}')->>'status' = 'pending'));
+do $$ begin
+  perform public.review_verification('sellerA', true);
+  raise exception 'FAIL: seller approved own account';
+exception when insufficient_privilege then raise notice 'ok - seller cannot approve own account';
+end $$;
+reset role;
+select pg_temp.check('one request row', (select count(*) = 1 from public.lister_verifications where owner_uid = 'sellerA'));
+select pg_temp.check('admin rejects', (select public.review_verification('sellerA', false, 'ID is blurry') = 'rejected'));
+set role authenticated;
+set request.jwt.claims = '{"iss":"https://securetoken.google.com/home8-61d48","aud":"home8-61d48","sub":"sellerA","role":"authenticated"}';
+select pg_temp.check('seller sees rejection + note', (select v->>'status' = 'rejected' and v->>'review_note' = 'ID is blurry' from (select public.my_verification() v) x));
+select pg_temp.check('resubmit after rejection -> pending', (select public.submit_verification(
+  '{"type":"individual","legal_name":"Sara Owner","id_front":{"name":"f.jpg","bytes":5,"path":"sellerA/docs/vf2.jpg"},"id_back":{"name":"b.jpg","bytes":5,"path":"sellerA/docs/vb2.jpg"}}')->>'status' = 'pending'));
+reset role;
+select pg_temp.check('admin approves', (select public.review_verification('sellerA', true) = 'verified'));
+select pg_temp.check('agent card created verified', (select verified and agency_name = 'Property owner' from public.agents where firebase_uid = 'sellerA'));
+set role authenticated;
+set request.jwt.claims = '{"iss":"https://securetoken.google.com/home8-61d48","aud":"home8-61d48","sub":"sellerA","role":"authenticated"}';
+select pg_temp.check('verified', (select public.my_verification()->>'status' = 'verified'));
+
 do $$ begin
   perform public.submit_listing(jsonb_build_object('id', (select v->>'id' from t where k='d1'), 'purpose', 'rent', 'country', 'AE'));
   raise exception 'FAIL: incomplete submit accepted';

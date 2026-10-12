@@ -7,6 +7,7 @@ import 'package:mapbox_maps_flutter/mapbox_maps_flutter.dart' show MapboxOptions
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'core/env.dart';
+import 'data/chat_service.dart';
 import 'data/listing_repository.dart';
 import 'data/mock_listing_repository.dart';
 import 'data/supabase_listing_repository.dart';
@@ -17,6 +18,7 @@ import 'state/auth_controller.dart';
 import 'state/connectivity_controller.dart';
 import 'state/guest_migration.dart';
 import 'state/prefs_store.dart';
+import 'state/presence_service.dart';
 import 'theme/app_theme.dart';
 
 Future<void> main() async {
@@ -160,6 +162,12 @@ class _Home8AppState extends State<Home8App> {
   String? _savedFor;
 
   void _syncSavedWithAccount() {
+    // Chat badge + online status follow the Firebase account.
+    if (widget.firebaseReady) {
+      final chatUid = _auth.isSignedIn ? ChatService.instance.myUid : null;
+      ChatUnread.instance.follow(chatUid);
+      PresenceService.instance.follow(chatUid);
+    }
     final uid = _auth.user?.id;
     if (uid == _savedFor) return;
     _savedFor = uid;

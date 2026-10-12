@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import '../models/agent_profile.dart';
 import '../models/lister_profile.dart';
 import '../models/uploaded_doc.dart';
 import '../models/listing_draft.dart';
@@ -170,4 +171,12 @@ abstract class ListingRepository {
   /// type, status (pending / verified / rejected) and the review note. Null
   /// when the account has never submitted one.
   Future<ListerProfile?> myVerification();
+
+  /// An agent / owner profile with their live listings. Signed-in only.
+  /// Null when the agent doesn't exist.
+  Future<AgentProfile?> agentProfile(String agentId);
+
+  /// Copies a new name / photo from Edit profile onto the user's public
+  /// agent / owner card. No-op for buyers who have never listed.
+  Future<void> updatePublicProfile({String? name, String? avatarUrl});
 }

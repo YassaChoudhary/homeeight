@@ -2,6 +2,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import '../core/async_value.dart';
+import '../models/agent_profile.dart';
 import '../models/lister_profile.dart';
 import '../models/listing_draft.dart';
 import '../models/my_listing.dart';
@@ -478,6 +479,24 @@ class MockListingRepository implements ListingRepository {
   Future<void> recordListingEvent(String listingId, ListingEvent event) async {}
 
   /// Demo mode: nothing on a server, so the account counts as approved.
+  @override
+  Future<void> updatePublicProfile({String? name, String? avatarUrl}) async {}
+
+  @override
+  Future<AgentProfile?> agentProfile(String agentId) async {
+    final page = await search(const SearchQuery(pageSize: 6));
+    final a = Agent.placeholder;
+    return AgentProfile(
+      id: agentId,
+      name: a.name,
+      agency: a.agency,
+      verified: a.verified,
+      kind: 'agent',
+      activeCount: page.results.length,
+      listings: page.results,
+    );
+  }
+
   @override
   Future<ListerProfile?> myVerification() => _respond(() => const ListerProfile(
         type: ListerType.individual,
